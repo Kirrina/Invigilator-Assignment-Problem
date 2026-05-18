@@ -1,0 +1,19 @@
+# Cấu hình IDE / Text Editor
+.vscode/
+.idea/
+
+# Thư mục cache và môi trường ảo của Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env/
+
+
+output/
+Optimized_Schedule.xlsx
+
+# Các file rác của Hệ điều hành
+.DS_Store
+Thumbs.db
