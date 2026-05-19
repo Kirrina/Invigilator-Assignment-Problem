@@ -37,7 +37,16 @@ def init_variables(data_model):
     return X, Slacks
 
 def add_hard_constraints(prob, X, Slacks, data_model):
-    """Thêm các Ràng buộc Cứng (Kèm Nới Lỏng và Di chuyển bất khả thi)"""
+    """
+    Thêm các Ràng buộc Cứng (Kèm Nới Lỏng và Di chuyển bất khả thi)
+    
+    Constraints added:
+    1. Capacity requirements (with slack for flexibility)
+    2. Overlap constraint (No double-booking for overlapping times)
+    3. Busy status (with slack for forced assignment)
+    4. Qualification level (with slack for underqualification)
+    5. Impossible travel detection (different campus, < 2 hours gap)
+    """
     CB = data_model['sets']['CB']
     CT = data_model['sets']['CT']
     R = data_model['sets']['R']
@@ -49,24 +58,58 @@ def add_hard_constraints(prob, X, Slacks, data_model):
     # --- 1. Ràng buộc Nhu cầu (Có nới lỏng) ---
     for j in CT:
         for r in R:
-            req = Cap_jr.get((j, r), 0)
+            req = Cap_jr.get((j, r), None)
+            
+            if req is None:
+                # Silently ignore roles not required for this shift
+                req = 0
+            elif req < 0:
+                print(f"⚠️  WARNING: Invalid negative capacity {req} for Shift {j}, Role {r}")
+                req = 0
+            
             if req > 0:
                 prob += pulp.lpSum(X[i, j, r] for i in CB) + Slacks['cap'][j, r] == req, f"Cap_{j}_{r}"
             else:
                 for i in CB:
                     prob += X[i, j, r] == 0
 
-    # --- 2. Ràng buộc Chống trùng lịch (Cứng Tuyệt Đối) ---
+    # --- 2. FIX: Ràng buộc Chống trùng lịch (Dạng tổng quát cho mọi ca chồng lấn) ---
+    # Pre-calculate overlapping shift pairs
+    # Logic: max(start1, start2) < min(end1, end2) means they overlap
+    print("   ... Đang tính toán các cặp ca chồng lấn thời gian")
+    overlapping_pairs = []
+    sorted_shifts = sorted(CT, key=lambda j: (CT_info[j]['date'], CT_info[j]['start']))
+    
+    for idx1 in range(len(sorted_shifts)):
+        for idx2 in range(idx1 + 1, len(sorted_shifts)):
+            j1, j2 = sorted_shifts[idx1], sorted_shifts[idx2]
+            info1, info2 = CT_info[j1], CT_info[j2]
+            
+            # Same day check
+            if info1['date'] == info2['date']:
+                # Overlap check
+                if max(info1['start'], info2['start']) < min(info1['end'], info2['end']):
+                    overlapping_pairs.append((j1, j2))
+                # If they don't overlap but are VERY close (e.g. exactly same time start/end)
+                # the solver should still treat them as mutually exclusive for one person
+                elif info1['end'] == info2['start'] or info2['end'] == info1['start']:
+                    overlapping_pairs.append((j1, j2))
+
     for i in CB:
+        # Each person can do at most 1 role at any given time
+        # For pairs that overlap, sum of assignments <= 1
+        for (j1, j2) in overlapping_pairs:
+            prob += pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) <= 1, f"Overlap_{i}_{j1}_{j2}"
+        
+        # Also ensure a person doesn't do two roles in the SAME unique shift (if not already covered)
         for j in CT:
-            prob += pulp.lpSum(X[i, j, r] for r in R) <= 1, f"OneRole_{i}_{j}"
+            prob += pulp.lpSum(X[i, j, r] for r in R) <= 1, f"OneRolePerShift_{i}_{j}"
             
     # --- 3. Ràng buộc Trạng thái bận (Có nới lỏng) ---
     for i in CB:
         for j in CT:
             if B_ij.get((i, j), 0) == 1:
                 for r in R:
-                    # Nếu slack = 0 -> X = 0 (Nghiêm cấm). Nếu Slack = 1 -> X <= 1 (Được phép)
                     prob += X[i, j, r] <= Slacks['busy'][i, j, r], f"Busy_{i}_{j}_{r}"
 
     # --- 4. Ràng buộc Năng lực (Có nới lỏng) ---
@@ -78,26 +121,44 @@ def add_hard_constraints(prob, X, Slacks, data_model):
             if level < 3:
                 prob += X[i, j, 'TruongHD'] <= Slacks['qual'][i, j, 'TruongHD'], f"Qual_TruongHD_{i}_{j}"
 
-    # --- 5. LỖ HỔNG VẬT LÝ: DI CHUYỂN BẤT KHẢ THI (Cứng Tuyệt Đối) ---
-    sorted_shifts = sorted(CT, key=lambda j: (CT_info[j]['date'], CT_info[j]['start']))
+    # --- 5. LỖ HỔNG VẬT LÝ: DI CHUYỂN BẤT KHẢ THI ---
+    # (Chỉ xét các ca KHÔNG chồng lấn nhưng cách nhau quá gần để di chuyển giữa các cơ sở)
     for idx1 in range(len(sorted_shifts)):
         for idx2 in range(idx1 + 1, len(sorted_shifts)):
             j1, j2 = sorted_shifts[idx1], sorted_shifts[idx2]
             info1, info2 = CT_info[j1], CT_info[j2]
             
-            # Xét 2 ca nối tiếp cùng ngày
             if info1['date'] == info2['date'] and info1['end'] <= info2['start']:
-                # Nếu KHÁC CƠ SỞ và Cách nhau DƯỚI 2 tiếng
                 if info1['campus'] != info2['campus']:
+                    # If different campus and gap < 2 hours
                     if (info2['start'] - info1['end']) < 2.0:
-                        # CẤM TUYỆT ĐỐI một người làm cả 2 ca này
                         for i in CB:
-                            prob += pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) <= 1, f"Impossible_Travel_{i}_{j1}_{j2}"
+                            # Note: Constraint name must be unique
+                            # If they are already constrained by Overlap (idx1, idx2), skip
+                            if (j1, j2) not in overlapping_pairs:
+                                prob += pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) <= 1, f"Travel_{i}_{j1}_{j2}"
 
 
 def add_soft_constraints_and_objective(prob, X, Slacks, data_model):
     """
     Thêm Ràng buộc mềm, Bảng giá phạt và Đánh thuế Slacks
+    
+    Penalty Strategy:
+    1. Static penalties P_ijr:
+       - Campus preference penalty: 0-10 points based on preference
+       - Qualification mismatch: penalizes OVERQUALIFICATION (waste of expert resources)
+    
+    2. Dynamic penalties for workload distribution:
+       - Travel fatigue: 0-50 points for shifts at different campuses with <4 hours gap
+       - Consecutive fatigue: 40 points for 3 consecutive shifts at same campus
+    
+    3. Hard constraint violations (slack penalties):
+       - Missing staff (capacity): 10,000 points per person
+       - Forced busy assignment: 5,000 points per forced assignment
+       - Forced overqualification: 5,000 points per forced overqualification
+    
+    4. Fairness objective:
+       - Minimize workload variance (W_high - W_low) to distribute shifts evenly
     """
     CB = data_model['sets']['CB']
     CT = data_model['sets']['CT']
@@ -122,12 +183,28 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model):
         for j in CT:
             campus_j = CT_info[j]['campus']
             like_score = Campus_like_ik.get((i, campus_j), 2)
+            
+            # Campus preference penalty
+            # like_score: 1=dislike, 2=neutral, 3=like
+            # Penalty: 10 points if dislike, 0 if like
             penalty_campus = 10.0 * (1 - like_score / 3.0)
             
             for r in R:
                 req_level = req_level_map.get(r, 1)
-                penalty_qual = 5.0 * max(0, L_i[i] - req_level) 
+                
+                # QUALIFICATION PENALTY:
+                # Penalizes OVERQUALIFICATION (assigning highly skilled staff to simple roles)
+                # Rationale: Discourage waste of expert resources
+                # Formula: 5.0 * max(0, staff_level - required_level)
+                # Example:
+                #   - Level 3 staff → Level 1 role = 5.0 * (3-1) = 10.0 penalty
+                #   - Level 2 staff → Level 2 role = 5.0 * (2-2) = 0 penalty (perfect match)
+                #   - Level 1 staff → Level 3 role = 5.0 * max(0, 1-3) = 0 (but hard constraint prevents this via slack)
+                staff_level = L_i[i]
+                penalty_qual = 5.0 * max(0, staff_level - req_level)
+                
                 P_ijr[(i, j, r)] = penalty_campus + penalty_qual
+
 
     # --- BƯỚC 3: TÍNH TRƯỚC "BẢNG GIÁ PHẠT" ĐỘNG ---
     sorted_shifts = sorted(CT, key=lambda j: (CT_info[j]['date'], CT_info[j]['start']))

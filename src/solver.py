@@ -34,7 +34,7 @@ def solve_model(prob, X, data_model):
                         time_str = f"{h}g{m:02d}"
                         
                         schedule_data.append({
-                            'Mã Ca Thi': j,
+                            'Mã Ca Thi': info['original_id'], # FIX: Use original ID for output
                             'Ngày': info['date'].strftime('%d/%m/%Y'),
                             'Giờ Bắt Đầu': time_str,
                             'Cơ Sở': info['campus'],
