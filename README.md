@@ -19,20 +19,7 @@ Cài đặt nhanh bằng lệnh:
 ```bash
 pip install -r requirements.txt
 ```
-
-## 🚀 Hướng dẫn sử dụng
-
-1.  **Chuẩn bị dữ liệu:** Đặt file Excel dữ liệu vào thư mục `input/`. Đảm bảo file có các cột: *MS của CÁN BỘ COI THI, MS Ca thi, Ngày, GIỜ, Thời gian, Cơ sở, Nhiệm vụ*.
-2.  **Chạy chương trình:**
-    ```bash
-    python src/main.py
-    ```
-3.  **Điều chỉnh dữ liệu (Tùy chọn):** Sau khi nạp dữ liệu, bạn có thể sửa trực tiếp Năng lực chuyên môn hoặc Lịch bận của cán bộ thông qua menu tương tác.
-3.  **Tinh chỉnh và Xuất kết quả:** 
-    *   Sau khi giải xong, máy sẽ in ra **Bảng chỉ số sức khỏe của lịch**.
-    *   Nếu chưa ưng ý, chọn `2` để thay đổi trọng số Công bằng hoặc Thuế phạt.
-    *   Nếu hài lòng, chọn `1` để xuất kết quả ra file `output/Optimized_Schedule.xlsx`.
-
+Hoặc:
 ## 🐳 Cách chạy chương trình qua Docker (Khuyên dùng)
 
 Phương thức này đảm bảo chương trình chạy ổn định nhất vì bộ giải **CBC** và mọi thư viện đã được đóng gói sẵn trong môi trường ảo hóa.
@@ -56,6 +43,21 @@ Chương trình yêu cầu tương tác và cần xuất file ra máy thật, h�
     ```
 
 **Lưu ý:** Tham số `-v` đảm bảo file Excel kết quả sinh ra bên trong Docker sẽ tự động xuất hiện tại thư mục `output/` trên máy tính của bạn.
+
+
+## 🚀 Hướng dẫn sử dụng
+
+1.  **Chuẩn bị dữ liệu:** Đặt file Excel dữ liệu vào thư mục `input/`. Đảm bảo file có các cột: *MS của CÁN BỘ COI THI, MS Ca thi, Ngày, GIỜ, Thời gian, Cơ sở, Nhiệm vụ*.
+2.  **Chạy chương trình:**
+    ```bash
+    python src/main.py
+    ```
+3.  **Điều chỉnh dữ liệu (Tùy chọn):** Sau khi nạp dữ liệu, bạn có thể sửa trực tiếp Năng lực chuyên môn hoặc Lịch bận của cán bộ thông qua menu tương tác.
+3.  **Tinh chỉnh và Xuất kết quả:** 
+    *   Sau khi giải xong, máy sẽ in ra **Bảng chỉ số sức khỏe của lịch**.
+    *   Nếu chưa ưng ý, chọn `2` để thay đổi trọng số Công bằng hoặc Thuế phạt.
+    *   Nếu hài lòng, chọn `1` để xuất kết quả ra file `output/Optimized_Schedule.xlsx`.
+
 
 ## 📂 Cấu trúc mã nguồn
 
