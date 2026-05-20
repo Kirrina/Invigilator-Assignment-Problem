@@ -28,12 +28,37 @@ pip install -r requirements.txt
     python src/main.py
     ```
 3.  **Điều chỉnh dữ liệu (Tùy chọn):** Sau khi nạp dữ liệu, bạn có thể sửa trực tiếp Năng lực chuyên môn hoặc Lịch bận của cán bộ thông qua menu tương tác.
-4.  **Tinh chỉnh và Xuất kết quả:** 
+3.  **Tinh chỉnh và Xuất kết quả:** 
     *   Sau khi giải xong, máy sẽ in ra **Bảng chỉ số sức khỏe của lịch**.
     *   Nếu chưa ưng ý, chọn `2` để thay đổi trọng số Công bằng hoặc Thuế phạt.
     *   Nếu hài lòng, chọn `1` để xuất kết quả ra file `output/Optimized_Schedule.xlsx`.
 
+## 🐳 Cách chạy chương trình qua Docker (Khuyên dùng)
+
+Phương thức này đảm bảo chương trình chạy ổn định nhất vì bộ giải **CBC** và mọi thư viện đã được đóng gói sẵn trong môi trường ảo hóa.
+
+### 1. Xây dựng Docker Image (Build)
+Mở Terminal tại thư mục dự án và chạy lệnh:
+```bash
+docker build -t iap-solver .
+```
+
+### 2. Khởi chạy chương trình (Run)
+Chương trình yêu cầu tương tác và cần xuất file ra máy thật, hãy chạy lệnh tương ứng với hệ điều hành:
+
+*   **Trên Windows (PowerShell):**
+    ```bash
+    docker run -it -v ${PWD}/output:/app/output iap-solver
+    ```
+*   **Trên macOS/Linux:**
+    ```bash
+    docker run -it -v $(pwd)/output:/app/output iap-solver
+    ```
+
+**Lưu ý:** Tham số `-v` đảm bảo file Excel kết quả sinh ra bên trong Docker sẽ tự động xuất hiện tại thư mục `output/` trên máy tính của bạn.
+
 ## 📂 Cấu trúc mã nguồn
+
 
 *   `src/main.py`: Bộ điều phối trung tâm và vòng lặp Tinh chỉnh (Tuning Loop).
 *   `src/data_preprocessing.py`: Xử lý làm sạch dữ liệu, nội suy cơ sở và định danh ca thi duy nhất.
