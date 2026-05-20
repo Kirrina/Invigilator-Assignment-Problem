@@ -1,8 +1,19 @@
 import pulp
 
-def build_model(data_model):
+def build_model(data_model, weights=None):
     """Xây dựng mô hình ILP: Khởi tạo biến, ràng buộc và hàm mục tiêu"""
     print("--- Đang khởi tạo mô hình ILP ---")
+    
+    # Thiết lập trọng số mặc định nếu không được truyền vào
+    if weights is None:
+        weights = {
+            'omega': 1.0,           # Trọng số Phạt (Penalty)
+            'theta': 20.0,          # Trọng số Công bằng (Fairness)
+            'TAX_LACK_STAFF': 10000.0,
+            'TAX_FORCE_BUSY': 5000.0,
+            'TAX_BAD_QUAL': 5000.0
+        }
+        
     prob = pulp.LpProblem("IAP_HCMUT", pulp.LpMinimize)
     
     # 1. Khởi tạo biến quyết định và biến nới lỏng (Slack Variables)
@@ -12,7 +23,7 @@ def build_model(data_model):
     add_hard_constraints(prob, X, Slacks, data_model)
     
     # 3. Thêm Ràng buộc mềm, Hàm mục tiêu và Phạt Slack
-    add_soft_constraints_and_objective(prob, X, Slacks, data_model)
+    add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights)
     
     return prob, X
 
@@ -68,14 +79,17 @@ def add_hard_constraints(prob, X, Slacks, data_model):
                 req = 0
             
             if req > 0:
+                # Requirement with slack for extra capacity
                 prob += pulp.lpSum(X[i, j, r] for i in CB) + Slacks['cap'][j, r] == req, f"Cap_{j}_{r}"
+                # NEW HARD CONSTRAINT: Every required role must have at least 1 person assigned
+                # This ensures no role is left completely empty even with slacks
+                prob += pulp.lpSum(X[i, j, r] for i in CB) >= 1, f"MinOne_{j}_{r}"
             else:
                 for i in CB:
                     prob += X[i, j, r] == 0
 
     # --- 2. FIX: Ràng buộc Chống trùng lịch (Dạng tổng quát cho mọi ca chồng lấn) ---
     # Pre-calculate overlapping shift pairs
-    # Logic: max(start1, start2) < min(end1, end2) means they overlap
     print("   ... Đang tính toán các cặp ca chồng lấn thời gian")
     overlapping_pairs = []
     sorted_shifts = sorted(CT, key=lambda j: (CT_info[j]['date'], CT_info[j]['start']))
@@ -85,25 +99,21 @@ def add_hard_constraints(prob, X, Slacks, data_model):
             j1, j2 = sorted_shifts[idx1], sorted_shifts[idx2]
             info1, info2 = CT_info[j1], CT_info[j2]
             
-            # Same day check
             if info1['date'] == info2['date']:
-                # Overlap check
                 if max(info1['start'], info2['start']) < min(info1['end'], info2['end']):
                     overlapping_pairs.append((j1, j2))
-                # If they don't overlap but are VERY close (e.g. exactly same time start/end)
-                # the solver should still treat them as mutually exclusive for one person
                 elif info1['end'] == info2['start'] or info2['end'] == info1['start']:
                     overlapping_pairs.append((j1, j2))
 
+    # TỐI ƯU HÓA: Tính trước tổng các vai trò cho mỗi người-ca
+    X_sum = {(i, j): pulp.lpSum(X[i, j, r] for r in R) for i in CB for j in CT}
+
     for i in CB:
-        # Each person can do at most 1 role at any given time
-        # For pairs that overlap, sum of assignments <= 1
         for (j1, j2) in overlapping_pairs:
-            prob += pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) <= 1, f"Overlap_{i}_{j1}_{j2}"
+            prob += X_sum[i, j1] + X_sum[i, j2] <= 1, f"Overlap_{i}_{j1}_{j2}"
         
-        # Also ensure a person doesn't do two roles in the SAME unique shift (if not already covered)
         for j in CT:
-            prob += pulp.lpSum(X[i, j, r] for r in R) <= 1, f"OneRolePerShift_{i}_{j}"
+            prob += X_sum[i, j] <= 1, f"OneRolePerShift_{i}_{j}"
             
     # --- 3. Ràng buộc Trạng thái bận (Có nới lỏng) ---
     for i in CB:
@@ -133,32 +143,13 @@ def add_hard_constraints(prob, X, Slacks, data_model):
                     # If different campus and gap < 2 hours
                     if (info2['start'] - info1['end']) < 2.0:
                         for i in CB:
-                            # Note: Constraint name must be unique
-                            # If they are already constrained by Overlap (idx1, idx2), skip
                             if (j1, j2) not in overlapping_pairs:
-                                prob += pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) <= 1, f"Travel_{i}_{j1}_{j2}"
+                                prob += X_sum[i, j1] + X_sum[i, j2] <= 1, f"Travel_{i}_{j1}_{j2}"
 
 
-def add_soft_constraints_and_objective(prob, X, Slacks, data_model):
+def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
     """
     Thêm Ràng buộc mềm, Bảng giá phạt và Đánh thuế Slacks
-    
-    Penalty Strategy:
-    1. Static penalties P_ijr:
-       - Campus preference penalty: 0-10 points based on preference
-       - Qualification mismatch: penalizes OVERQUALIFICATION (waste of expert resources)
-    
-    2. Dynamic penalties for workload distribution:
-       - Travel fatigue: 0-50 points for shifts at different campuses with <4 hours gap
-       - Consecutive fatigue: 40 points for 3 consecutive shifts at same campus
-    
-    3. Hard constraint violations (slack penalties):
-       - Missing staff (capacity): 10,000 points per person
-       - Forced busy assignment: 5,000 points per forced assignment
-       - Forced overqualification: 5,000 points per forced overqualification
-    
-    4. Fairness objective:
-       - Minimize workload variance (W_high - W_low) to distribute shifts evenly
     """
     CB = data_model['sets']['CB']
     CT = data_model['sets']['CT']
@@ -168,13 +159,11 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model):
     Campus_like_ik = data_model['synthetic']['Campus_like_ik']
 
     # --- BƯỚC 1: TRỌNG SỐ TUNING ---
-    omega = 1.0       # Trọng số cho tổng điểm Phạt
-    theta = 20.0      # Trọng số cho sự Công bằng
-    
-    # Bàn tay sắt: Đánh thuế cực nặng nếu dám xài biến Nới lỏng
-    TAX_LACK_STAFF = 10000.0  # Phạt 10k nếu thiếu 1 người
-    TAX_FORCE_BUSY = 5000.0   # Phạt 5k nếu ép người bận
-    TAX_BAD_QUAL   = 5000.0   # Phạt 5k nếu phân công vượt cấp
+    omega = weights.get('omega', 1.0)
+    theta = weights.get('theta', 20.0)
+    TAX_LACK_STAFF = weights.get('TAX_LACK_STAFF', 10000.0)
+    TAX_FORCE_BUSY = weights.get('TAX_FORCE_BUSY', 5000.0)
+    TAX_BAD_QUAL   = weights.get('TAX_BAD_QUAL', 5000.0)
 
     # --- BƯỚC 2: MA TRẬN PHẠT TĨNH (P_ijr) ---
     req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
@@ -183,89 +172,66 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model):
         for j in CT:
             campus_j = CT_info[j]['campus']
             like_score = Campus_like_ik.get((i, campus_j), 2)
-            
-            # Campus preference penalty
-            # like_score: 1=dislike, 2=neutral, 3=like
-            # Penalty: 10 points if dislike, 0 if like
             penalty_campus = 10.0 * (1 - like_score / 3.0)
-            
             for r in R:
-                req_level = req_level_map.get(r, 1)
-                
-                # QUALIFICATION PENALTY:
-                # Penalizes OVERQUALIFICATION (assigning highly skilled staff to simple roles)
-                # Rationale: Discourage waste of expert resources
-                # Formula: 5.0 * max(0, staff_level - required_level)
-                # Example:
-                #   - Level 3 staff → Level 1 role = 5.0 * (3-1) = 10.0 penalty
-                #   - Level 2 staff → Level 2 role = 5.0 * (2-2) = 0 penalty (perfect match)
-                #   - Level 1 staff → Level 3 role = 5.0 * max(0, 1-3) = 0 (but hard constraint prevents this via slack)
                 staff_level = L_i[i]
-                penalty_qual = 5.0 * max(0, staff_level - req_level)
-                
+                penalty_qual = 5.0 * max(0, staff_level - req_level_map.get(r, 1))
                 P_ijr[(i, j, r)] = penalty_campus + penalty_qual
-
 
     # --- BƯỚC 3: TÍNH TRƯỚC "BẢNG GIÁ PHẠT" ĐỘNG ---
     sorted_shifts = sorted(CT, key=lambda j: (CT_info[j]['date'], CT_info[j]['start']))
     pair_penalties = {}   
-    triplet_penalties = {} 
-    
+    shifts_by_day = {}
+    for j in CT:
+        d = CT_info[j]['date']
+        if d not in shifts_by_day: shifts_by_day[d] = []
+        shifts_by_day[d].append(j)
+
     for idx1 in range(len(sorted_shifts)):
         for idx2 in range(idx1 + 1, len(sorted_shifts)):
             j1, j2 = sorted_shifts[idx1], sorted_shifts[idx2]
             info1, info2 = CT_info[j1], CT_info[j2]
-            
             if info1['date'] == info2['date'] and info1['end'] <= info2['start']:
-                # Luật di chuyển (Chỉ xét gap >= 2 vì < 2 đã bị Cấm Tuyệt Đối ở trên)
-                if info1['campus'] != info2['campus']:
-                    gap_hours = info2['start'] - info1['end']
-                    if gap_hours >= 2.0:
-                        penalty = max(0.0, 50.0 - 10.0 * (gap_hours - 2.0))
-                        if penalty > 0:
-                            pair_penalties[(j1, j2)] = penalty
+                gap = info2['start'] - info1['end']
+                if info1['campus'] != info2['campus'] and gap >= 2.0:
+                    penalty = max(0.0, 50.0 - 10.0 * (gap - 2.0))
+                    if penalty > 0: pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) + penalty
+                if gap > 2.0:
+                    pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) + (gap - 2.0) * 15.0
 
-                # Luật mệt mỏi: 3 ca liên tiếp Cùng cơ sở
-                for idx3 in range(idx2 + 1, len(sorted_shifts)):
-                    j3 = sorted_shifts[idx3]
-                    info3 = CT_info[j3]
-                    if info2['date'] == info3['date'] and info2['end'] <= info3['start']:
-                        if info1['campus'] == info2['campus'] == info3['campus']:
-                            triplet_penalties[(j1, j2, j3)] = 40.0 
-
-    # --- BƯỚC 4: KHỞI TẠO BIẾN CỜ (FLAGS) & BIẾN CÔNG BẰNG ---
+    # --- BƯỚC 4: KHỞI TẠO BIẾN CỜ (FLAGS) ---
     W_i = {i: pulp.LpVariable(f"W_{i}", lowBound=0, cat='Integer') for i in CB}
     W_high = pulp.LpVariable("W_high", lowBound=0, cat='Integer')
     W_low = pulp.LpVariable("W_low", lowBound=0, cat='Integer')
-    
     Y_pair = pulp.LpVariable.dicts("ypair", ((i, j1, j2) for i in CB for (j1, j2) in pair_penalties.keys()), cat='Binary')
-    Y_trip = pulp.LpVariable.dicts("ytrip", ((i, j1, j2, j3) for i in CB for (j1, j2, j3) in triplet_penalties.keys()), cat='Binary')
+    
+    DAYS = list(shifts_by_day.keys())
+    Y_fatigue = pulp.LpVariable.dicts("yfatigue", ((i, d, level) for i in CB for d in DAYS for level in [3, 4, 5]), cat='Binary')
+
+    X_sum = {(i, j): pulp.lpSum(X[i, j, r] for r in R) for i in CB for j in CT}
 
     # --- BƯỚC 5: ÉP RÀNG BUỘC KÍCH HOẠT CỜ ---
     for i in CB:
-        prob += W_i[i] == pulp.lpSum(X[i, j, r] for j in CT for r in R), f"TotalShifts_{i}"
+        prob += W_i[i] == pulp.lpSum(X_sum[i, j] for j in CT), f"TotalShifts_{i}"
         prob += W_high >= W_i[i], f"MaxBound_{i}"
         prob += W_low <= W_i[i], f"MinBound_{i}"
-        
         for (j1, j2) in pair_penalties.keys():
-            prob += Y_pair[i, j1, j2] >= pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) - 1
-            
-        for (j1, j2, j3) in triplet_penalties.keys():
-            prob += Y_trip[i, j1, j2, j3] >= pulp.lpSum(X[i, j1, r] for r in R) + pulp.lpSum(X[i, j2, r] for r in R) + pulp.lpSum(X[i, j3, r] for r in R) - 2
+            prob += Y_pair[i, j1, j2] >= X_sum[i, j1] + X_sum[i, j2] - 1
+        for d in DAYS:
+            daily_total = pulp.lpSum(X_sum[i, j] for j in shifts_by_day[d])
+            prob += daily_total <= 2 + Y_fatigue[i, d, 3] + Y_fatigue[i, d, 4] + Y_fatigue[i, d, 5], f"Fatigue_{i}_{d}"
+            prob += Y_fatigue[i, d, 4] <= Y_fatigue[i, d, 3]
+            prob += Y_fatigue[i, d, 5] <= Y_fatigue[i, d, 4]
 
     # --- BƯỚC 6: TỔNG HỢP HÀM MỤC TIÊU ---
     F1 = W_high - W_low
-    
     penalty_static = pulp.lpSum(P_ijr[(i, j, r)] * X[i, j, r] for i in CB for j in CT for r in R)
     penalty_pairs = pulp.lpSum(pair_penalties[(j1, j2)] * Y_pair[i, j1, j2] for i in CB for (j1, j2) in pair_penalties.keys())
-    penalty_triplets = pulp.lpSum(triplet_penalties[(j1, j2, j3)] * Y_trip[i, j1, j2, j3] for i in CB for (j1, j2, j3) in triplet_penalties.keys())
+    penalty_fatigue = pulp.lpSum(40 * Y_fatigue[i, d, 3] + 80 * Y_fatigue[i, d, 4] + 150 * Y_fatigue[i, d, 5] for i in CB for d in DAYS)
     
-    # Tính "Tiền Thuế" từ các biến nới lỏng
     penalty_slack_cap = pulp.lpSum(Slacks['cap'][j, r] * TAX_LACK_STAFF for j in CT for r in R)
     penalty_slack_busy = pulp.lpSum(Slacks['busy'][i, j, r] * TAX_FORCE_BUSY for i in CB for j in CT for r in R)
     penalty_slack_qual = pulp.lpSum(Slacks['qual'][i, j, r] * TAX_BAD_QUAL for i in CB for j in CT for r in R)
     
-    F2 = penalty_static + penalty_pairs + penalty_triplets + penalty_slack_cap + penalty_slack_busy + penalty_slack_qual
-    
-    # Gán hàm mục tiêu
+    F2 = penalty_static + penalty_pairs + penalty_fatigue + penalty_slack_cap + penalty_slack_busy + penalty_slack_qual
     prob += omega * F2 + theta * F1, "Objective_Function"

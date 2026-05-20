@@ -214,6 +214,9 @@ def preprocess_data(file_path):
 
     if not Cap_jr:
         raise ValueError("No capacity requirements found")
+    
+    np.random.seed(42)
+    random.seed(42)
 
     B_ij = {(i, j): 0 for i in CB for j in CT}
     num_busy_slots = int(0.05 * len(CB) * len(CT))
@@ -221,8 +224,7 @@ def preprocess_data(file_path):
     for pair in busy_pairs:
         B_ij[pair] = 1
 
-    np.random.seed(42)
-    random.seed(42)
+    
 
     role_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
     L_i = {}
