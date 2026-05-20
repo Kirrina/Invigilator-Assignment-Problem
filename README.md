@@ -1,40 +1,44 @@
-# Hướng dẫn chạy chương trình - Đề tài IAP (Invigilator Assignment Problem)
+# IAP Solver - Hệ thống tối ưu hóa phân công giám thị (HCMUT)
 
-Chương trình này giải quyết bài toán Phân công giám thị sử dụng Quy hoạch nguyên (ILP) với thư viện PuLP, tuân thủ theo cấu trúc chia module chuyên nghiệp.
+Dự án này cung cấp bộ giải bài toán Phân công giám thị (Invigilator Assignment Problem - IAP) dựa trên mô hình Quy hoạch nguyên (Integer Linear Programming - ILP). Hệ thống sử dụng thư viện `PuLP` và bộ giải `CBC` để tìm ra phương án phân công tối ưu, cân bằng giữa tính công bằng và các ràng buộc thực tế.
 
-## 1. Yêu cầu hệ thống
-* Máy tính cần cài đặt **Python 3.8+**.
+## 🌟 Tính năng nổi bật
 
-## 2. Cài đặt thư viện
-Mở Terminal/PowerShell tại thư mục gốc của project và chạy lệnh sau để cài đặt các thư viện cần thiết:
+*   **Tối ưu hóa đa mục tiêu:** Cân bằng giữa độ lệch khối lượng công việc (Fairness) và các điểm phạt (Penalty) về di chuyển, mệt mỏi.
+*   **Cơ chế Nới lỏng Ràng buộc (Slack Variables):** Đảm bảo hệ thống luôn tìm ra nghiệm ngay cả khi dữ liệu đầu vào có mâu thuẫn (Infeasible) thông qua chiến lược phạt Big-M.
+*   **Tinh chỉnh trọng số tương tác (Interactive Tuning):** Cho phép người dùng đánh giá các chỉ số sức khỏe của lịch (Gap công bằng, số lần mệt mỏi, di chuyển...) và điều chỉnh trọng số (`theta`, `taxes`) ngay trong lúc chạy để có kết quả ưng ý nhất.
+*   **Tối ưu hiệu năng vượt trội:** Sử dụng kỹ thuật tính toán trước (`X_sum`) giúp giảm thời gian xây dựng mô hình từ vài phút xuống còn vài giây, xử lý mượt mà hàng chục nghìn biến số.
+*   **Xử lý thời gian thực:** Chống trùng lịch và kiểm tra di chuyển bất khả thi dựa trên giờ bắt đầu/kết thúc thực tế (Continuous-time logic).
+
+## 🛠️ Yêu cầu hệ thống
+
+*   **Python 3.8+**
+*   Các thư viện bổ trợ: `pandas`, `numpy`, `pulp`, `openpyxl`.
+
+Cài đặt nhanh bằng lệnh:
 ```bash
 pip install -r requirements.txt
 ```
 
-## 3. Cách chạy chương trình
-Từ thư mục gốc của project, bạn khởi chạy chương trình bằng lệnh:
-```bash
-python src/main.py
-```
-*Lưu ý:* 
-- Khi chạy, chương trình sẽ hiển thị một Menu Điều chỉnh (Data Adjustment) cho phép bạn cấu hình lại sở thích và năng lực của cán bộ. 
-- Nhập `0` để bỏ qua menu và ngay lập tức chạy mô hình tối ưu (Solver). 
-- Quá trình chạy có thể mất vài giây đến vài phút tùy cấu hình máy.
+## 🚀 Hướng dẫn sử dụng
 
-## 4. Cấu trúc thư mục dự án
-Chương trình được thiết kế theo chuẩn module hóa, chia tách rõ ràng giữa Dữ liệu và Source Code:
+1.  **Chuẩn bị dữ liệu:** Đặt file Excel dữ liệu vào thư mục `input/`. Đảm bảo file có các cột: *MS của CÁN BỘ COI THI, MS Ca thi, Ngày, GIỜ, Thời gian, Cơ sở, Nhiệm vụ*.
+2.  **Chạy chương trình:**
+    ```bash
+    python src/main.py
+    ```
+3.  **Điều chỉnh dữ liệu (Tùy chọn):** Sau khi nạp dữ liệu, bạn có thể sửa trực tiếp Năng lực chuyên môn hoặc Lịch bận của cán bộ thông qua menu tương tác.
+4.  **Tinh chỉnh và Xuất kết quả:** 
+    *   Sau khi giải xong, máy sẽ in ra **Bảng chỉ số sức khỏe của lịch**.
+    *   Nếu chưa ưng ý, chọn `2` để thay đổi trọng số Công bằng hoặc Thuế phạt.
+    *   Nếu hài lòng, chọn `1` để xuất kết quả ra file `output/Optimized_Schedule.xlsx`.
 
-```text
-IAP/
-├── input/
-│   └── Dataset_Anonymized_Invigilator_Assignment_Problem.xlsx  <-- Đặt file dữ liệu gốc (Baseline) vào đây
-├── output/
-│   └── Optimized_Schedule.xlsx                                 <-- File Excel kết quả tối ưu sẽ tự động xuất ra đây
-├── src/
-│   ├── main.py                 <-- File chạy chính (Orchestrator)
-│   ├── data_preprocessing.py   <-- Module đọc Excel, sinh dữ liệu giả lập (L_i, Sở thích...)
-│   ├── model_builder.py        <-- Module chứa các công thức ILP (Biến x_ijr, Ràng buộc cứng, Điểm phạt)
-│   └── solver.py               <-- Module thực thi gọi PuLP CBC Solver và xuất báo cáo
-├── requirements.txt            <-- File chứa danh sách thư viện
-└── README.md                   <-- File hướng dẫn sử dụng
-```
+## 📂 Cấu trúc mã nguồn
+
+*   `src/main.py`: Bộ điều phối trung tâm và vòng lặp Tinh chỉnh (Tuning Loop).
+*   `src/data_preprocessing.py`: Xử lý làm sạch dữ liệu, nội suy cơ sở và định danh ca thi duy nhất.
+*   `src/model_builder.py`: Xây dựng mô hình toán học, biến quyết định và hệ phương trình ràng buộc.
+*   `src/solver.py`: Thực thi bộ giải CBC (với `timeLimit=60s`) và trích xuất các chỉ số đánh giá.
+
+---
+**Nhóm phát triển - Mô hình hóa toán học (Nhóm 9 - L01)**
