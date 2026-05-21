@@ -2,6 +2,7 @@ import pulp
 import pandas as pd
 import os
 import time
+from data_preprocessing import audit_static_feasibility
 
 def solve_model(prob, X, data_model, skip_export=False):
     """Giải mô hình và trả về các chỉ số đánh giá chi tiết"""
@@ -21,21 +22,45 @@ def solve_model(prob, X, data_model, skip_export=False):
     status_raw = pulp.LpStatus[status]
     obj_val = pulp.value(prob.objective)
 
-    # Logic phân loại trạng thái nghiệm (Refactoring Step 2)
-    if status_raw == 'Optimal':
+    # Logic phân loại trạng thái nghiệm (Fixed Logic: Status First)
+    if status_raw == 'Infeasible':
+        final_status = 'Infeasible'
+    elif status_raw == 'Optimal':
         final_status = 'Optimal'
     elif obj_val is not None:
         # Nếu không báo Optimal nhưng đã có nghiệm trong tay (do đạt TimeLimit hoặc Gap)
-        if solve_duration < 59.0: # Dừng trước khi hết giờ -> Chắc chắn đạt Gap 2%
+        # FIX: Threshold 55s thay vì 59s để an toàn hơn (tránh báo Near-Optimal khi thực tế hết timeout)
+        if solve_duration < 55.0: # Dừng sớm trước hết giờ -> Chắc chắn đạt Gap 2%
             final_status = 'Near-Optimal'
-        else: # Bị ngắt do hết giờ -> Có nghiệm nhưng chưa chứng minh được Gap
+        else: # Chạy gần hoặc chính xác 60s -> Có nghiệm nhưng Gap không chắc
             final_status = 'Feasible'
     else:
         final_status = 'Infeasible'
 
     print(f"\n[Kết quả] Trạng thái: {final_status} (Raw: {status_raw})")
     print(f"[Kết quả] Thời gian giải: {solve_duration:.2f} giây")
-    if obj_val is not None:
+    
+    if final_status == 'Infeasible':
+        print("\n" + "!"*60)
+        print("[-] KẾT QUẢ CHẨN ĐOÁN LỖI (DIAGNOSIS):")
+        
+        # Gọi lại Audit để kiểm tra nguyên nhân
+        is_static_feasible, audit_errors = audit_static_feasibility(data_model)
+        
+        if not is_static_feasible:
+            print("\n>>> NGUYÊN NHÂN: LỖI DỮ LIỆU TĨNH (STATIC ERROR)")
+            print("    Hệ thống phát hiện mâu thuẫn ngay ở khâu nhân sự/trình độ:")
+            for err in audit_errors[:5]:
+                print(f"    - {err}")
+        else:
+            print("\n>>> NGUYÊN NHÂN: LỖI RÀNG BUỘC ĐỘNG (DYNAMIC CONFLICT)")
+            print("    Dữ liệu tĩnh (số lượng/trình độ) hoàn toàn hợp lệ.")
+            print("    Lỗi xảy ra do mâu thuẫn giữa các ràng buộc chéo như:")
+            print("    1. Di chuyển bất khả thi giữa 2 cơ sở (Travel Constraint).")
+            print("    2. Chồng lấn thời gian ca thi (Overlap Constraint).")
+            print("    3. Quá nhiều ràng buộc cứng khiến không còn phương án khả thi.")
+        print("!"*60)
+    elif obj_val is not None:
         print(f"[Kết quả] Giá trị hàm mục tiêu (Objective): {obj_val:.2f}")
 
     metrics = {
@@ -57,14 +82,20 @@ def solve_model(prob, X, data_model, skip_export=False):
             metrics['low'] = w_low
             
         # 2. Thống kê Slack và Penalty (Violation counts)
+        # FIX: Đồng nhất logic - tất cả đều cộng giá trị (val), không cộng số lượng (1)
         for var in prob.variables():
             val = pulp.value(var)
             if val and val > 0.001:
-                if 'slack_cap' in var.name: metrics['slack_cap'] += val
-                elif 'slack_busy' in var.name: metrics['slack_busy'] += 1
-                elif 'slack_qual' in var.name: metrics['slack_qual'] += 1
-                elif 'yfatigue' in var.name: metrics['fatigue_count'] += 1
-                elif 'ypair' in var.name: metrics['travel_count'] += 1
+                if 'slack_cap' in var.name: 
+                    metrics['slack_cap'] += val
+                elif 'slack_busy' in var.name: 
+                    metrics['slack_busy'] += val  # FIX: += 1 → += val
+                elif 'slack_qual' in var.name: 
+                    metrics['slack_qual'] += val  # FIX: += 1 → += val
+                elif 'yfatigue' in var.name: 
+                    metrics['fatigue_count'] += val
+                elif 'ypair' in var.name: 
+                    metrics['travel_count'] += val
                 
         if not skip_export:
             print(f"\n[+] ĐÃ TÌM THẤY LỜI GIẢI ({final_status})!")

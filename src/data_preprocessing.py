@@ -34,6 +34,14 @@ def convert_time_to_float(time_str):
     time_str = ' '.join(time_str.split())  # Normalize whitespace
     
     try:
+        # Try parsing as a single float first (e.g., "14.5")
+        try:
+            val = float(time_str)
+            if 0 <= val <= 24:
+                return val
+        except ValueError:
+            pass
+
         parts = time_str.split()
         
         if len(parts) == 0:
@@ -64,7 +72,7 @@ def normalize_role(role):
 
     return mapping.get(role, role)
 
-def preprocess_data(file_path):
+def preprocess_data(file_path, soft_busy_rate=0.05, hard_busy_rate=0.02):
     """
     Preprocess Excel data and extract model parameters.
 
@@ -77,6 +85,8 @@ def preprocess_data(file_path):
 
     Args:
         file_path: Path to Excel file
+        soft_busy_rate: Percentage of staff-shift pairs for soft-busy (penalty if forced)
+        hard_busy_rate: Percentage of staff-shift pairs for hard-busy (strictly forbidden)
 
     Returns:
         dict: Data model with sets, parameters, and synthetic data
@@ -215,14 +225,31 @@ def preprocess_data(file_path):
     if not Cap_jr:
         raise ValueError("No capacity requirements found")
     
+    print(f"⚠️  LƯU Ý: Nhu cầu nhân sự (Cap_jr) được tính dựa trên dữ liệu phân công thực tế trong file Excel.")
+    print(f"   Nếu một ca thi bị thiếu người trong file gốc, hệ thống sẽ không tự động tăng thêm chỉ tiêu.")
+    
+    # --- TIERED BUSY GENERATION ---
     np.random.seed(42)
     random.seed(42)
 
     B_ij = {(i, j): 0 for i in CB for j in CT}
-    num_busy_slots = int(0.05 * len(CB) * len(CT))
-    busy_pairs = random.sample(list(B_ij.keys()), num_busy_slots)
-    for pair in busy_pairs:
-        B_ij[pair] = 1
+    all_pairs = list(B_ij.keys())
+    random.shuffle(all_pairs)
+
+    num_soft = int(soft_busy_rate * len(all_pairs))
+    num_hard = int(hard_busy_rate * len(all_pairs))
+
+    # Pick hard-busy first (strictly forbidden)
+    hard_pairs = all_pairs[:num_hard]
+    for p in hard_pairs:
+        B_ij[p] = 2
+    
+    # Pick soft-busy next (prefer not to work)
+    soft_pairs = all_pairs[num_hard : num_hard + num_soft]
+    for p in soft_pairs:
+        B_ij[p] = 1
+
+    print(f"  - Phân bậc bận: {num_hard} tuyệt đối (2), {num_soft} bận nhẹ (1)")
 
     
 
@@ -242,7 +269,7 @@ def preprocess_data(file_path):
                 unknown_roles_encountered.add(r)
                 levels.append(1)  # Default to basic level
 
-        L_i[i] = max(levels) if levels else 3
+        L_i[i] = max(levels) if levels else 1
 
     # Report unknown roles if any found
     if unknown_roles_encountered:
@@ -274,6 +301,59 @@ def preprocess_data(file_path):
         'parameters': {'Cap_jr': Cap_jr, 'B_ij': B_ij, 'CT_info': CT_info},
         'synthetic': {'L_i': L_i, 'Campus_like_ik': Campus_like_ik}
     }
+
+def audit_static_feasibility(data_model):
+    """
+    Kiểm tra tiền khả thi (Static Audit) trước khi chạy Solver.
+    
+    1. Kiểm tra số lượng: Tổng người rảnh (B_ij != 2) >= Tổng nhu cầu ca j.
+    2. Kiểm tra chất lượng (Lead Proctor): Mỗi role phải có ít nhất 1 người đúng trình độ và rảnh.
+    
+    Returns:
+        tuple: (bool, list) - (Is feasible, list of error messages)
+    """
+    CB = data_model['sets']['CB']
+    CT = data_model['sets']['CT']
+    R = data_model['sets']['R']
+    Cap_jr = data_model['parameters']['Cap_jr']
+    B_ij = data_model['parameters']['B_ij']
+    CT_info = data_model['parameters']['CT_info']
+    L_i = data_model['synthetic']['L_i']
+    
+    role_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
+    errors = []
+
+    print("\n[Audit] Đang kiểm tra tính khả thi của dữ liệu...")
+
+    for j in CT:
+        info = CT_info[j]
+        shift_id_display = f"{info['original_id']} ({info['date']} {info['campus']})"
+        
+        # 1. Kiểm tra tổng số lượng (Pigeonhole)
+        total_req = sum(Cap_jr.get((j, r), 0) for r in R)
+        if total_req == 0: continue
+        
+        available_staff = [i for i in CB if B_ij.get((i, j), 0) != 2]
+        
+        if len(available_staff) < total_req:
+            errors.append(f"Ca {shift_id_display}: Thiếu người trầm trọng. Cần {total_req} nhưng chỉ có {len(available_staff)} người không bận tuyệt đối.")
+            continue # Nếu đã thiếu tổng thì không cần check role nữa
+            
+        # 2. Kiểm tra Lead Proctor (Chất lượng)
+        for r in R:
+            if Cap_jr.get((j, r), 0) > 0:
+                req_level = role_level_map.get(r, 1)
+                qualified_and_free = [i for i in available_staff if L_i.get(i, 1) >= req_level]
+                
+                if not qualified_and_free:
+                    errors.append(f"Ca {shift_id_display}: Không có cán bộ nào đủ trình độ gác vai trò '{r}' mà đang rảnh.")
+
+    if not errors:
+        print("✓ Audit: Dữ liệu tĩnh hợp lệ. Không phát hiện mâu thuẫn số lượng/trình độ.")
+        return True, []
+    else:
+        print(f"❌ Audit: Phát hiện {len(errors)} điểm nghẽn nghiêm trọng về dữ liệu!")
+        return False, errors
 
 def manual_data_adjustment(data_model):
     """
@@ -339,8 +419,12 @@ def _view_staff_info(CB, CT, K, L_i, Campus_like_ik, B_ij):
     print(f"- Năng lực (L_i): {L_i[staff_id]}")
     for k in K:
         print(f"- Mức độ thích {k}: {Campus_like_ik.get((staff_id, k))}")
-    busy_shifts = [j for j in CT if B_ij.get((staff_id, j)) == 1]
-    print(f"- Số ca thi đang bị bận (B_ij=1): {len(busy_shifts)}")
+    
+    soft_busy = [j for j in CT if B_ij.get((staff_id, j)) == 1]
+    hard_busy = [j for j in CT if B_ij.get((staff_id, j)) == 2]
+    print(f"- Trạng thái bận:")
+    print(f"  + Bận nhẹ (B_ij=1): {len(soft_busy)} ca")
+    print(f"  + Bận tuyệt đối (B_ij=2): {len(hard_busy)} ca")
 
 
 def _update_staff_qualification(CB, L_i):
@@ -433,20 +517,25 @@ def _update_busy_status(CB, CT, B_ij):
 
     while True:
         try:
-            new_val = input(f"Trạng thái bận của {shift_id} (1: Bận, 0: Rảnh): ").strip()
-            new_val = int(new_val)
+            print("Nhập trạng thái bận mới:")
+            print(" 0: Rảnh (Available)")
+            print(" 1: Bận nhẹ (Soft-Busy - Có thể bị ép đi kèm phạt)")
+            print(" 2: Bận tuyệt đối (Hard-Busy - Tuyệt đối không phân công)")
+            new_val_str = input("Lựa chọn (0-2): ").strip()
+            if not new_val_str: continue
+            new_val = int(new_val_str)
 
-            if new_val not in [0, 1]:
-                print(f"❌ Giá trị '{new_val}' không hợp lệ. Vui lòng nhập 0 hoặc 1")
+            if new_val not in [0, 1, 2]:
+                print(f"❌ Giá trị '{new_val}' không hợp lệ. Vui lòng nhập 0, 1 hoặc 2")
                 continue
 
             B_ij[(staff_id, shift_id)] = new_val
-            status = "Bận" if new_val == 1 else "Rảnh"
-            print(f"✓ Cập nhật thành công: {staff_id} - {shift_id} → {status}")
+            mapping = {0: "Rảnh", 1: "Bận nhẹ", 2: "Bận tuyệt đối"}
+            print(f"✓ Cập nhật thành công: {staff_id} - {shift_id} → {mapping[new_val]}")
             break
 
         except ValueError:
-            print(f"❌ Lỗi: Nhập không hợp lệ. Vui lòng nhập số: 0 hoặc 1")
+            print(f"❌ Lỗi: Nhập không hợp lệ. Vui lòng nhập số: 0, 1 hoặc 2")
         except KeyboardInterrupt:
             print("\n❌ Đã hủy bỏ")
             break

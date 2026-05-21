@@ -67,12 +67,13 @@ def add_hard_constraints(prob, X, Slacks, data_model):
     L_i = data_model['synthetic']['L_i']
     
     # --- 1. Ràng buộc Nhu cầu (Có nới lỏng) ---
+    req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
+    
     for j in CT:
         for r in R:
             req = Cap_jr.get((j, r), None)
             
             if req is None:
-                # Silently ignore roles not required for this shift
                 req = 0
             elif req < 0:
                 print(f"⚠️  WARNING: Invalid negative capacity {req} for Shift {j}, Role {r}")
@@ -81,9 +82,25 @@ def add_hard_constraints(prob, X, Slacks, data_model):
             if req > 0:
                 # Requirement with slack for extra capacity
                 prob += pulp.lpSum(X[i, j, r] for i in CB) + Slacks['cap'][j, r] == req, f"Cap_{j}_{r}"
-                # NEW HARD CONSTRAINT: Every required role must have at least 1 person assigned
-                # This ensures no role is left completely empty even with slacks
-                prob += pulp.lpSum(X[i, j, r] for i in CB) >= 1, f"MinOne_{j}_{r}"
+                
+                # --- RULE: LEAD PROCTOR (Chặn đứng sự lỏng lẻo) ---
+                # Phải có ít nhất 1 người đạt chuẩn năng lực gác vai trò này
+                # Note: Chỉ xét những người không bị bận tuyệt đối (B_ij != 2)
+                required_level = req_level_map.get(r, 1)
+                qualified_and_free = [i for i in CB 
+                                      if L_i.get(i, 1) >= required_level 
+                                      and B_ij.get((i, j), 0) != 2]
+                
+                # Chỉ thêm constraint nếu có người phù hợp để tránh mâu thuẫn logic tức thì
+                # Nếu trống, Audit Static Feasibility sẽ cảnh báo lỗi dữ liệu.
+                if qualified_and_free:
+                    prob += pulp.lpSum(X[i, j, r] for i in qualified_and_free) >= 1, f"LeadProctor_{j}_{r}"
+                else:
+                    # Nếu không có ai rảnh và đủ trình độ, vẫn ép buộc ít nhất có người đủ trình độ (dù bận)
+                    # để solver báo lỗi Infeasible một cách tường minh qua xung đột ràng buộc Busy
+                    qualified_staff = [i for i in CB if L_i.get(i, 1) >= required_level]
+                    if qualified_staff:
+                        prob += pulp.lpSum(X[i, j, r] for i in qualified_staff) >= 1, f"LeadProctor_Hard_{j}_{r}"
             else:
                 for i in CB:
                     prob += X[i, j, r] == 0
@@ -115,12 +132,18 @@ def add_hard_constraints(prob, X, Slacks, data_model):
         for j in CT:
             prob += X_sum[i, j] <= 1, f"OneRolePerShift_{i}_{j}"
             
-    # --- 3. Ràng buộc Trạng thái bận (Có nới lỏng) ---
+    # --- 3. Ràng buộc Trạng thái bận (Phân bậc: Tuyệt đối vs. Bận nhẹ) ---
     for i in CB:
         for j in CT:
-            if B_ij.get((i, j), 0) == 1:
+            busy_status = B_ij.get((i, j), 0)
+            if busy_status == 2:
+                # Bận tuyệt đối (Hard-Busy) -> Cấm phân công
                 for r in R:
-                    prob += X[i, j, r] <= Slacks['busy'][i, j, r], f"Busy_{i}_{j}_{r}"
+                    prob += X[i, j, r] == 0, f"HardBusy_{i}_{j}_{r}"
+            elif busy_status == 1:
+                # Bận nhẹ (Soft-Busy) -> Cho phép nới lỏng kèm phạt
+                for r in R:
+                    prob += X[i, j, r] <= Slacks['busy'][i, j, r], f"SoftBusy_{i}_{j}_{r}"
 
     # --- 4. Ràng buộc Năng lực (Có nới lỏng) ---
     for i in CB:
@@ -166,7 +189,7 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
     TAX_BAD_QUAL   = weights.get('TAX_BAD_QUAL', 5000.0)
 
     # --- BƯỚC 2: MA TRẬN PHẠT TĨNH (P_ijr) ---
-    req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
+    req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}  # Role level requirement mapping
     P_ijr = {}
     for i in CB:
         for j in CT:
@@ -175,7 +198,16 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
             penalty_campus = 10.0 * (1 - like_score / 3.0)
             for r in R:
                 staff_level = L_i[i]
-                penalty_qual = 5.0 * max(0, staff_level - req_level_map.get(r, 1))
+                req_level = req_level_map.get(r, 1)
+                # Penalty cho Qualification Mismatch:
+                # - Overqualification: Người giỏi làm việc dưới level (5.0 per level)
+                # - Underqualification: Người yếu làm việc trên level (50.0 per level)
+                #   (Note: Underqualification cũng bị phạt qua slack_qual * TAX_BAD_QUAL=5000,
+                #    nhưng công thức này giúp model tránh dự định từ đầu)
+                penalty_qual = (
+                    5.0 * max(0, staff_level - req_level) +      # Overqualification
+                    50.0 * max(0, req_level - staff_level)        # Underqualification
+                )
                 P_ijr[(i, j, r)] = penalty_campus + penalty_qual
 
     # --- BƯỚC 3: TÍNH TRƯỚC "BẢNG GIÁ PHẠT" ĐỘNG ---
@@ -197,7 +229,7 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
                     penalty = max(0.0, 50.0 - 10.0 * (gap - 2.0))
                     if penalty > 0: pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) + penalty
                 if gap > 2.0:
-                    pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) + (gap - 2.0) * 15.0
+                    pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) +   (gap - 2.0) * 15.0
 
     # --- BƯỚC 4: KHỞI TẠO BIẾN CỜ (FLAGS) ---
     W_i = {i: pulp.LpVariable(f"W_{i}", lowBound=0, cat='Integer') for i in CB}
@@ -229,9 +261,9 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
     penalty_pairs = pulp.lpSum(pair_penalties[(j1, j2)] * Y_pair[i, j1, j2] for i in CB for (j1, j2) in pair_penalties.keys())
     penalty_fatigue = pulp.lpSum(40 * Y_fatigue[i, d, 3] + 80 * Y_fatigue[i, d, 4] + 150 * Y_fatigue[i, d, 5] for i in CB for d in DAYS)
     
-    penalty_slack_cap = pulp.lpSum(Slacks['cap'][j, r] * TAX_LACK_STAFF for j in CT for r in R)
-    penalty_slack_busy = pulp.lpSum(Slacks['busy'][i, j, r] * TAX_FORCE_BUSY for i in CB for j in CT for r in R)
-    penalty_slack_qual = pulp.lpSum(Slacks['qual'][i, j, r] * TAX_BAD_QUAL for i in CB for j in CT for r in R)
+    penalty_slack_cap = pulp.lpSum(Slacks['cap'][j, r] * TAX_LACK_STAFF for j, r in Slacks['cap'].keys())
+    penalty_slack_busy = pulp.lpSum(Slacks['busy'][i, j, r] * TAX_FORCE_BUSY for i, j, r in Slacks['busy'].keys())
+    penalty_slack_qual = pulp.lpSum(Slacks['qual'][i, j, r] * TAX_BAD_QUAL for i, j, r in Slacks['qual'].keys())
     
     F2 = penalty_static + penalty_pairs + penalty_fatigue + penalty_slack_cap + penalty_slack_busy + penalty_slack_qual
     prob += omega * F2 + theta * F1, "Objective_Function"
