@@ -1,24 +1,53 @@
 import pulp
 import pandas as pd
 import os
+import time
 
 def solve_model(prob, X, data_model, skip_export=False):
     """Giải mô hình và trả về các chỉ số đánh giá chi tiết"""
-    print("\n--- Bắt đầu chạy Solver (PuLP) ---")
+    print("\n" + "-"*60)
+    print("--- Bắt đầu chạy Solver (PuLP - CBC) ---")
+    print(f"Cấu hình: TimeLimit=60s, Optimality Gap=2% (0.02)")
+    print("-"*60)
 
-    # timeLimit: tránh treo máy
-    status = prob.solve(pulp.PULP_CBC_CMD(msg=True, timeLimit=60))
-    status_str = pulp.LpStatus[status]
-
-    print(f"Trạng thái tối ưu: {status_str}")
+    # Bắt đầu đo thời gian và giải
+    start_time = time.time()
     
+    # gapRel=0.02: Dừng nếu đạt sai số 2% so với tối ưu tuyệt đối
+    # msg=True: Hiển thị log của CBC để theo dõi Gap
+    status = prob.solve(pulp.PULP_CBC_CMD(msg=True, timeLimit=60, gapRel=0.02))
+    
+    solve_duration = time.time() - start_time
+    status_raw = pulp.LpStatus[status]
+    obj_val = pulp.value(prob.objective)
+
+    # Logic phân loại trạng thái nghiệm (Refactoring Step 2)
+    if status_raw == 'Optimal':
+        final_status = 'Optimal'
+    elif obj_val is not None:
+        # Nếu không báo Optimal nhưng đã có nghiệm trong tay (do đạt TimeLimit hoặc Gap)
+        if solve_duration < 59.0: # Dừng trước khi hết giờ -> Chắc chắn đạt Gap 2%
+            final_status = 'Near-Optimal'
+        else: # Bị ngắt do hết giờ -> Có nghiệm nhưng chưa chứng minh được Gap
+            final_status = 'Feasible'
+    else:
+        final_status = 'Infeasible'
+
+    print(f"\n[Kết quả] Trạng thái: {final_status} (Raw: {status_raw})")
+    print(f"[Kết quả] Thời gian giải: {solve_duration:.2f} giây")
+    if obj_val is not None:
+        print(f"[Kết quả] Giá trị hàm mục tiêu (Objective): {obj_val:.2f}")
+
     metrics = {
+        'status': final_status,
+        'solve_time': solve_duration,
+        'obj_value': obj_val,
         'gap': None, 'high': None, 'low': None,
         'slack_cap': 0, 'slack_busy': 0, 'slack_qual': 0,
         'fatigue_count': 0, 'travel_count': 0
     }
 
-    if status_str == 'Optimal':
+    if final_status in ['Optimal', 'Near-Optimal', 'Feasible']:
         # 1. Tính toán Fairness
         w_high = pulp.value(prob.variablesDict().get('W_high'))
         w_low = pulp.value(prob.variablesDict().get('W_low'))
@@ -27,21 +56,21 @@ def solve_model(prob, X, data_model, skip_export=False):
             metrics['high'] = w_high
             metrics['low'] = w_low
             
-        # 2. Thống kê Slack và Penalty
+        # 2. Thống kê Slack và Penalty (Violation counts)
         for var in prob.variables():
             val = pulp.value(var)
             if val and val > 0.001:
                 if 'slack_cap' in var.name: metrics['slack_cap'] += val
                 elif 'slack_busy' in var.name: metrics['slack_busy'] += 1
                 elif 'slack_qual' in var.name: metrics['slack_qual'] += 1
-                elif 'ytrip' in var.name: metrics['fatigue_count'] += 1
+                elif 'yfatigue' in var.name: metrics['fatigue_count'] += 1
                 elif 'ypair' in var.name: metrics['travel_count'] += 1
                 
         if not skip_export:
-            print("\n[+] ĐÃ TÌM THẤY LỜI GIẢI TỐI ƯU!")
+            print(f"\n[+] ĐÃ TÌM THẤY LỜI GIẢI ({final_status})!")
             export_to_excel(prob, X, data_model)
             
-    return status_str, metrics
+    return final_status, metrics
 
 def export_to_excel(prob, X, data_model):
     """Xuất kết quả lịch phân công ra file Excel"""

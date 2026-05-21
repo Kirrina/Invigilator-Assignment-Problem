@@ -60,19 +60,32 @@ def main():
             prob, X = build_model(data_model, weights=weights)
             status, metrics = solve_model(prob, X, data_model, skip_export=True)
             
-            if status == 'Optimal':
+            if status in ['Optimal', 'Near-Optimal', 'Feasible']:
                 print("\n" + "-"*50)
                 print("   CHỈ SỐ SỨC KHỎE CỦA LỊCH PHÂN CÔNG")
                 print("-"*50)
-                print(f"1. Độ lệch công bằng (Gap): {metrics['gap']} ca")
+                if status == 'Optimal':
+                    print(">>> STATUS: Global Optimal Solution found.")
+                elif status == 'Near-Optimal':
+                    print(">>> STATUS: Solver terminated at relative optimality gap (Target 2%).")
+                    print("    The obtained solution is considered near-optimal.")
+                else: # Feasible
+                    print(">>> STATUS: Solver reached time limit (60s).")
+                    print("    The obtained solution is feasible, but quality is unproven (Gap > 2%).")
+                
+                print(f"\n1. Thông số hiệu năng (Solver Metrics):")
+                print(f"   - Objective Value: {metrics['obj_value']:.2f}")
+                print(f"   - Solve Time:      {metrics['solve_time']:.2f} seconds")
+                
+                print(f"\n2. Độ lệch công bằng (Gap): {metrics['gap']} ca")
                 print(f"   (Max: {metrics['high']} | Min: {metrics['low']})")
                 
-                print(f"\n2. Vi phạm ràng buộc (Slack):")
+                print(f"\n3. Vi phạm ràng buộc mềm (Soft Constraint Violations):")
                 print(f"   - Thiếu người gác:  {int(metrics['slack_cap'])} vị trí")
                 print(f"   - Ép người bận:     {int(metrics['slack_busy'])} trường hợp")
                 print(f"   - Sai chuyên môn:   {int(metrics['slack_qual'])} trường hợp")
                 
-                print(f"\n3. Chỉ số phụ (Penalty counts):")
+                print(f"\n4. Chỉ số phụ (Penalty counts):")
                 print(f"   - Số lần mệt mỏi:   {int(metrics['fatigue_count'])} ca")
                 print(f"   - Số lần di chuyển/chờ: {int(metrics['travel_count'])} ca")
                 print("-"*50)
@@ -102,14 +115,25 @@ def main():
                     print(">>> Đã hủy bỏ.")
                     break
             else:
-                print(f"\n[-] KHÔNG TÌM THẤY LỜI GIẢI (INFEASIBLE).")
-                ans = input("Bạn có muốn giảm phí phạt Nới lỏng (Relaxation) để tìm nghiệm không? (Y/N): ").strip().upper()
-                if ans == 'Y':
-                    weights['TAX_LACK_STAFF'] = 5000.0
-                    weights['TAX_FORCE_BUSY'] = 2500.0
-                    weights['TAX_BAD_QUAL'] = 2500.0
-                else:
-                    break
+                print("\n" + "!"*60)
+                print("[-] KHÔNG TÌM THẤY LỜI GIẢI KHẢ THI (INFEASIBLE)!")
+                print("!"*60)
+                print("\nLÝ DO TOÁN HỌC:")
+                print("Không gian nghiệm rỗng. Các ràng buộc cứng đang mâu thuẫn lẫn nhau.")
+                print("Việc thay đổi trọng số (Penalty weights) sẽ KHÔNG giải quyết được lỗi này.")
+                
+                print("\nCÁC NGUYÊN NHÂN CÓ THỂ GÂY LỖI:")
+                print("1. Thiếu hụt nhân sự: Số lượng cán bộ (CB) ít hơn nhu cầu tối thiểu tại các ca cao điểm.")
+                print("2. Mâu thuẫn di chuyển: Quá nhiều ca thi sát giờ (< 2 tiếng) ở các cơ sở khác nhau.")
+                print("3. Cấu hình bận (B_ij): Quá nhiều cán bộ bị đánh dấu bận, không còn ai đủ điều kiện.")
+                
+                print("\nHƯỚNG GIẢI QUYẾT:")
+                print("A. Kiểm tra file Excel: Tăng số lượng cán bộ hoặc giảm bớt yêu cầu tại ca thi.")
+                print("B. Kiểm tra Menu Adjustment: Mở khóa trạng thái bận (B_ij=0) cho một số cán bộ.")
+                print("C. Kiểm tra logic Travel: Xem lại các ca thi ở CS1 và CS2 có quá gần nhau không.")
+                
+                print("\n>>> Chương trình dừng tại đây để bảo vệ tính chính xác của dữ liệu.")
+                return False
         
         return True
     
