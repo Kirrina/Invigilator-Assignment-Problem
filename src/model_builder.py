@@ -208,8 +208,8 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
                 #   (Note: Underqualification cũng bị phạt qua slack_qual * TAX_BAD_QUAL=5000,
                 #    nhưng công thức này giúp model tránh dự định từ đầu)
                 penalty_qual = (
-                    5.0 * max(0, staff_level - req_level) +      # Overqualification
-                    50.0 * max(0, req_level - staff_level)        # Underqualification
+                    5.0 * (staff_level - req_level) +      # Overqualification
+                   
                 )
                 P_ijr[(i, j, r)] = penalty_campus + penalty_qual
 
