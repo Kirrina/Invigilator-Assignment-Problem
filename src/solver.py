@@ -22,22 +22,45 @@ def solve_model(prob, X, data_model, skip_export=False):
     status_raw = pulp.LpStatus[status]
     obj_val = pulp.value(prob.objective)
 
-    # Logic phân loại trạng thái nghiệm (Fixed Logic: Status First)
+    # 1. Tính toán Gap thực tế trước (Skeptical approach)
+    actual_gap = None
+    best_bound = None
+    if obj_val is not None and obj_val != 0:
+        # Thử lấy bestBound từ nhiều nguồn của PuLP
+        try:
+            best_bound = prob.bestBound
+            if best_bound is None and hasattr(prob, 'solver'):
+                best_bound = getattr(prob.solver, 'bestBound', None)
+        except Exception:
+            pass
+            
+        if best_bound is not None:
+            actual_gap = abs(obj_val - best_bound) / abs(obj_val)
+
+    # 2. Phân loại trạng thái (Khắt khe hơn)
     if status_raw == 'Infeasible':
         final_status = 'Infeasible'
-    elif status_raw == 'Optimal':
-        final_status = 'Optimal'
     elif obj_val is not None:
-        # Nếu không báo Optimal nhưng đã có nghiệm trong tay (do đạt TimeLimit hoặc Gap)
-        # FIX: Threshold 55s thay vì 59s để an toàn hơn (tránh báo Near-Optimal khi thực tế hết timeout)
-        if solve_duration < 55.0: # Dừng sớm trước hết giờ -> Chắc chắn đạt Gap 2%
+        # Trường hợp 1: Có Gap và Gap cực nhỏ -> Optimal thực sự
+        if actual_gap is not None and actual_gap < 0.001:
+            final_status = 'Optimal'
+        # Trường hợp 2: PuLP báo Optimal và chạy xong rất nhanh -> Tin là Optimal
+        elif status_raw == 'Optimal' and solve_duration < 50.0:
+            final_status = 'Optimal'
+        # Trường hợp 3: Có Gap và Gap trong ngưỡng cho phép
+        elif actual_gap is not None and actual_gap <= 0.0201:
             final_status = 'Near-Optimal'
-        else: # Chạy gần hoặc chính xác 60s -> Có nghiệm nhưng Gap không chắc
+        # Trường hợp 4: Mọi trường hợp còn lại (bao gồm cả việc không đọc được Gap sau 60s)
+        else:
             final_status = 'Feasible'
     else:
         final_status = 'Infeasible'
 
     print(f"\n[Kết quả] Trạng thái: {final_status} (Raw: {status_raw})")
+    if actual_gap is not None:
+        print(f"[Kết quả] Optimality Gap: {actual_gap*100:.2f}%")
+    else:
+        print(f"[Kết quả] Optimality Gap: Không xác định (Nghi ngờ Timeout)")
     print(f"[Kết quả] Thời gian giải: {solve_duration:.2f} giây")
     
     if final_status == 'Infeasible':
@@ -69,7 +92,8 @@ def solve_model(prob, X, data_model, skip_export=False):
         'obj_value': obj_val,
         'gap': None, 'high': None, 'low': None,
         'slack_cap': 0, 'slack_busy': 0, 'slack_qual': 0,
-        'fatigue_count': 0, 'travel_count': 0
+        'fatigue_count': 0, 'travel_count': 0,
+        'actual_gap_pct': round(actual_gap * 100, 2) if 'actual_gap' in locals() and actual_gap is not None else None
     }
 
     if final_status in ['Optimal', 'Near-Optimal', 'Feasible']:
@@ -128,11 +152,14 @@ def export_to_excel(prob, X, data_model):
                         'Giờ Bắt Đầu': time_str,
                         'Cơ Sở': info['campus'],
                         'Mã Cán Bộ': i,
-                        'Vai Trò': r
+                        'Vai Trò': r,
+                        '_sort_date':   info['date'],       # date object — sort đúng
+                        '_sort_start':  info['start'], 
                     })
 
     df_result = pd.DataFrame(schedule_data)
-    df_result = df_result.sort_values(by=['Ngày', 'Giờ Bắt Đầu', 'Cơ Sở', 'Mã Ca Thi'])
+    df_result = df_result.sort_values(by=['_sort_date', '_sort_start', 'Cơ Sở', 'Mã Ca Thi'])
+    df_result = df_result.drop(columns=['_sort_date', '_sort_start'])
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)

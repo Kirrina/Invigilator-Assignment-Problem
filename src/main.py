@@ -109,7 +109,8 @@ def main():
                 if status == 'Optimal':
                     print(">>> STATUS: Global Optimal Solution found.")
                 elif status == 'Near-Optimal':
-                    print(">>> STATUS: Solver terminated at relative optimality gap (Target 2%).")
+                    gap_str = f"({metrics.get('actual_gap_pct')}%)" if metrics.get('actual_gap_pct') is not None else "(< 2%)"
+                    print(f">>> STATUS: Near-Optimal - Solver reached target gap {gap_str}.")
                     print("    The obtained solution is considered near-optimal.")
                 else: # Feasible
                     print(">>> STATUS: Solver reached time limit (60s).")

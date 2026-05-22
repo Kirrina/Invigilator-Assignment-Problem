@@ -72,7 +72,7 @@ def normalize_role(role):
 
     return mapping.get(role, role)
 
-def preprocess_data(file_path, soft_busy_rate=0.05, hard_busy_rate=0.02):
+def preprocess_data(file_path, soft_busy_rate=0, hard_busy_rate=1):
     """
     Preprocess Excel data and extract model parameters.
 

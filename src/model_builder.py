@@ -1,5 +1,8 @@
 import pulp
 
+# Mapping chuẩn mức độ vai trò
+REQ_LEVEL_MAP = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
+
 def build_model(data_model, weights=None):
     """Xây dựng mô hình ILP: Khởi tạo biến, ràng buộc và hàm mục tiêu"""
     print("--- Đang khởi tạo mô hình ILP ---")
@@ -41,7 +44,7 @@ def init_variables(data_model):
         # Số lượng người bị THIẾU cho ca j, vai trò r
         'cap': pulp.LpVariable.dicts("slack_cap", ((j, r) for j in CT for r in R), lowBound=0, cat='Integer'),
         # Cờ báo hiệu ÉP người đang bận phải đi làm
-        'busy': pulp.LpVariable.dicts("slack_busy", ((i, j, r) for i in CB for j in CT for r in R), cat='Binary'),
+        'busy': {},
         # Cờ báo hiệu phân công VƯỢT CẤP (thiếu năng lực)
         'qual': pulp.LpVariable.dicts("slack_qual", ((i, j, r) for i in CB for j in CT for r in R), cat='Binary')
     }
@@ -67,7 +70,6 @@ def add_hard_constraints(prob, X, Slacks, data_model):
     L_i = data_model['synthetic']['L_i']
     
     # --- 1. Ràng buộc Nhu cầu (Có nới lỏng) ---
-    req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
     
     for j in CT:
         for r in R:
@@ -86,7 +88,7 @@ def add_hard_constraints(prob, X, Slacks, data_model):
                 # --- RULE: LEAD PROCTOR (Chặn đứng sự lỏng lẻo) ---
                 # Phải có ít nhất 1 người đạt chuẩn năng lực gác vai trò này
                 # Note: Chỉ xét những người không bị bận tuyệt đối (B_ij != 2)
-                required_level = req_level_map.get(r, 1)
+                required_level = REQ_LEVEL_MAP.get(r, 1)
                 qualified_and_free = [i for i in CB 
                                       if L_i.get(i, 1) >= required_level 
                                       and B_ij.get((i, j), 0) != 2]
@@ -143,7 +145,9 @@ def add_hard_constraints(prob, X, Slacks, data_model):
             elif busy_status == 1:
                 # Bận nhẹ (Soft-Busy) -> Cho phép nới lỏng kèm phạt
                 for r in R:
-                    prob += X[i, j, r] <= Slacks['busy'][i, j, r], f"SoftBusy_{i}_{j}_{r}"
+                    slack_var = pulp.LpVariable(f"slack_busy_{i}_{j}_{r}", cat='Binary')
+                    Slacks['busy'][(i,j,r)] = slack_var
+                    prob += X[i, j, r] <= slack_var, f"SoftBusy_{i}_{j}_{r}"
 
     # --- 4. Ràng buộc Năng lực (Có nới lỏng) ---
     for i in CB:
@@ -189,7 +193,6 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
     TAX_BAD_QUAL   = weights.get('TAX_BAD_QUAL', 5000.0)
 
     # --- BƯỚC 2: MA TRẬN PHẠT TĨNH (P_ijr) ---
-    req_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}  # Role level requirement mapping
     P_ijr = {}
     for i in CB:
         for j in CT:
@@ -198,7 +201,7 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
             penalty_campus = 10.0 * (1 - like_score / 3.0)
             for r in R:
                 staff_level = L_i[i]
-                req_level = req_level_map.get(r, 1)
+                req_level = REQ_LEVEL_MAP.get(r, 1)
                 # Penalty cho Qualification Mismatch:
                 # - Overqualification: Người giỏi làm việc dưới level (5.0 per level)
                 # - Underqualification: Người yếu làm việc trên level (50.0 per level)
@@ -231,6 +234,11 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
                 if gap > 2.0:
                     pair_penalties[(j1, j2)] = pair_penalties.get((j1, j2), 0.0) +   (gap - 2.0) * 15.0
 
+    # LỌC CÁC PENALTY NHỎ ĐỂ GIẢM SỐ LƯỢNG BIẾN Y_pair (Tối ưu Memory & Performance)
+    # Loại bỏ các penalty dưới 5.0 để tránh tạo biến cho những khoảng chờ không đáng kể
+    MIN_PENALTY_THRESHOLD = 5.0
+    pair_penalties = {k: v for k, v in pair_penalties.items() if v >= MIN_PENALTY_THRESHOLD}
+
     # --- BƯỚC 4: KHỞI TẠO BIẾN CỜ (FLAGS) ---
     W_i = {i: pulp.LpVariable(f"W_{i}", lowBound=0, cat='Integer') for i in CB}
     W_high = pulp.LpVariable("W_high", lowBound=0, cat='Integer')
@@ -240,7 +248,9 @@ def add_soft_constraints_and_objective(prob, X, Slacks, data_model, weights):
     DAYS = list(shifts_by_day.keys())
     Y_fatigue = pulp.LpVariable.dicts("yfatigue", ((i, d, level) for i in CB for d in DAYS for level in [3, 4, 5]), cat='Binary')
 
-    X_sum = {(i, j): pulp.lpSum(X[i, j, r] for r in R) for i in CB for j in CT}
+    # TỐI ƯU HÓA BỘ NHỚ: Dùng sum() Python thông thường thay vì pulp.lpSum() do R rất nhỏ (3 phần tử)
+    # Điều này tạo Expression nhanh hơn và tiết kiệm một chút overhead của lpSum
+    X_sum = {(i, j): sum([X[i, j, r] for r in R]) for i in CB for j in CT}
 
     # --- BƯỚC 5: ÉP RÀNG BUỘC KÍCH HOẠT CỜ ---
     for i in CB:
