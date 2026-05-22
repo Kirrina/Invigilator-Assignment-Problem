@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 import os
+import json
 
 def convert_time_to_float(time_str):
     """
@@ -228,29 +229,60 @@ def preprocess_data(file_path, soft_busy_rate=0, hard_busy_rate=1):
     print(f"⚠️  LƯU Ý: Nhu cầu nhân sự (Cap_jr) được tính dựa trên dữ liệu phân công thực tế trong file Excel.")
     print(f"   Nếu một ca thi bị thiếu người trong file gốc, hệ thống sẽ không tự động tăng thêm chỉ tiêu.")
     
-    # --- TIERED BUSY GENERATION ---
-    np.random.seed(42)
-    random.seed(42)
+    # --- TIERED BUSY GENERATION (với cache) ---
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    output_dir = os.path.join(project_root, 'output')
+    os.makedirs(output_dir, exist_ok=True)
 
-    B_ij = {(i, j): 0 for i in CB for j in CT}
-    all_pairs = list(B_ij.keys())
-    random.shuffle(all_pairs)
+    bij_cache_path = os.path.join(output_dir, 'B_ij_cache.json')
 
-    num_soft = int(soft_busy_rate * len(all_pairs))
-    num_hard = int(hard_busy_rate * len(all_pairs))
+    # Tạo cache key dựa trên tham số ảnh hưởng đến B_ij
+    bij_cache_key = f"soft={soft_busy_rate}_hard={hard_busy_rate}_n={len(CB)*len(CT)}"
 
-    # Pick hard-busy first (strictly forbidden)
-    hard_pairs = all_pairs[:num_hard]
-    for p in hard_pairs:
-        B_ij[p] = 2
-    
-    # Pick soft-busy next (prefer not to work)
-    soft_pairs = all_pairs[num_hard : num_hard + num_soft]
-    for p in soft_pairs:
-        B_ij[p] = 1
+    B_ij = None
+    if os.path.exists(bij_cache_path):
+        try:
+            with open(bij_cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if cached.get('cache_key') == bij_cache_key:
+                raw = cached['data']
+                B_ij = {(entry[0], entry[1]): entry[2] for entry in raw}
+                print(f"  ✓ Đã load B_ij từ cache ({len(B_ij)} cặp)")
+            else:
+                print(f"  ⚠️  Cache B_ij lỗi thời (key khác), tái sinh...")
+        except Exception as e:
+            print(f"  ⚠️  Không đọc được cache B_ij: {e}, tái sinh...")
 
-    print(f"  - Phân bậc bận: {num_hard} tuyệt đối (2), {num_soft} bận nhẹ (1)")
+    if B_ij is None:
+        np.random.seed(42)
+        random.seed(42)
 
+        B_ij = {(i, j): 0 for i in CB for j in CT}
+        all_pairs = list(B_ij.keys())
+        random.shuffle(all_pairs)
+
+        num_soft = int(soft_busy_rate * len(all_pairs))
+        num_hard = int(hard_busy_rate * len(all_pairs))
+
+        hard_pairs = all_pairs[:num_hard]
+        for p in hard_pairs:
+            B_ij[p] = 2
+
+        soft_pairs = all_pairs[num_hard : num_hard + num_soft]
+        for p in soft_pairs:
+            B_ij[p] = 1
+
+        print(f"  - Phân bậc bận: {num_hard} tuyệt đối (2), {num_soft} bận nhẹ (1)")
+
+        # Lưu cache
+        try:
+            serializable = [[i, j, v] for (i, j), v in B_ij.items() if v != 0]
+            with open(bij_cache_path, 'w', encoding='utf-8') as f:
+                json.dump({'cache_key': bij_cache_key, 'data': serializable}, f, ensure_ascii=False)
+            print(f"  ✓ Đã lưu B_ij cache ({len(serializable)} cặp != 0) → {bij_cache_path}")
+        except Exception as e:
+            print(f"  ⚠️  Không lưu được cache B_ij: {e}")
     
 
     role_level_map = {'CBCT': 1, 'Thuky': 2, 'TruongHD': 3}
@@ -280,19 +312,47 @@ def preprocess_data(file_path, soft_busy_rate=0, hard_busy_rate=1):
             print(f"    These staff have been assigned level 1 (basic)")
         print("  If these roles should be recognized, update role_level_map\n")
 
-    groups = ['Nhom_CS1', 'Nhom_CS2', 'Nhom_CanBang']
-    Campus_like_ik = {}
-    for i in CB:
-        assigned_group = random.choice(groups)
-        if assigned_group == 'Nhom_CS1':
-            Campus_like_ik[(i, 'Cơ sở 1')] = 3
-            Campus_like_ik[(i, 'Cơ sở 2')] = 1
-        elif assigned_group == 'Nhom_CS2':
-            Campus_like_ik[(i, 'Cơ sở 1')] = 1
-            Campus_like_ik[(i, 'Cơ sở 2')] = 3
-        else:
-            Campus_like_ik[(i, 'Cơ sở 1')] = 2
-            Campus_like_ik[(i, 'Cơ sở 2')] = 2
+    campus_cache_path = os.path.join(output_dir, 'Campus_like_cache.json')
+    campus_cache_key = f"n_staff={len(CB)}"
+
+    Campus_like_ik = None
+    if os.path.exists(campus_cache_path):
+        try:
+            with open(campus_cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if cached.get('cache_key') == campus_cache_key:
+                raw = cached['data']
+                Campus_like_ik = {(entry[0], entry[1]): entry[2] for entry in raw}
+                print(f"  ✓ Đã load Campus_like_ik từ cache ({len(Campus_like_ik)} cặp)")
+            else:
+                print(f"  ⚠️  Cache Campus_like lỗi thời, tái sinh...")
+        except Exception as e:
+            print(f"  ⚠️  Không đọc được cache Campus_like: {e}, tái sinh...")
+
+    if Campus_like_ik is None:
+        groups = ['Nhom_CS1', 'Nhom_CS2', 'Nhom_CanBang']
+        Campus_like_ik = {}
+        for i in CB:
+            assigned_group = random.choice(groups)
+            if assigned_group == 'Nhom_CS1':
+                Campus_like_ik[(i, 'Cơ sở 1')] = 3
+                Campus_like_ik[(i, 'Cơ sở 2')] = 1
+            elif assigned_group == 'Nhom_CS2':
+                Campus_like_ik[(i, 'Cơ sở 1')] = 1
+                Campus_like_ik[(i, 'Cơ sở 2')] = 3
+            else:
+                Campus_like_ik[(i, 'Cơ sở 1')] = 2
+                Campus_like_ik[(i, 'Cơ sở 2')] = 2
+
+        # Lưu cache
+        try:
+            serializable = [[i, k, v] for (i, k), v in Campus_like_ik.items()]
+            with open(campus_cache_path, 'w', encoding='utf-8') as f:
+                json.dump({'cache_key': campus_cache_key, 'data': serializable}, f, ensure_ascii=False)
+            print(f"  ✓ Đã lưu Campus_like cache ({len(serializable)} cặp) → {campus_cache_path}")
+        except Exception as e:
+            print(f"  ⚠️  Không lưu được cache Campus_like: {e}")
+
 
     print("--- Hoàn tất tiền xử lý dữ liệu ---")
 
@@ -539,3 +599,54 @@ def _update_busy_status(CB, CT, B_ij):
         except KeyboardInterrupt:
             print("\n❌ Đã hủy bỏ")
             break
+
+def slice_data_model(data_model, cb_size, ct_size):
+    """
+    Cắt data_model thành subset nhỏ hơn để thử nghiệm/benchmark.
+
+    Args:
+        data_model: dict trả về từ preprocess_data()
+        cb_size: Số cán bộ coi thi cần lấy (lấy cb_size đầu tiên)
+        ct_size: Số ca thi cần lấy (lấy ct_size đầu tiên)
+
+    Returns:
+        dict: Data model đã được cắt nhỏ, cùng cấu trúc với data_model gốc
+    """
+    CB_full = data_model['sets']['CB']
+    CT_full = data_model['sets']['CT']
+
+    CB_sub = CB_full[:cb_size]
+    CT_sub = CT_full[:ct_size]
+
+    CB_set = set(CB_sub)
+    CT_set = set(CT_sub)
+
+    B_ij_full = data_model['parameters']['B_ij']
+    Cap_jr_full = data_model['parameters']['Cap_jr']
+    CT_info_full = data_model['parameters']['CT_info']
+    L_i_full = data_model['synthetic']['L_i']
+    Campus_like_ik_full = data_model['synthetic']['Campus_like_ik']
+
+    B_ij_sub = {(i, j): v for (i, j), v in B_ij_full.items() if i in CB_set and j in CT_set}
+    Cap_jr_sub = {(j, r): v for (j, r), v in Cap_jr_full.items() if j in CT_set}
+    CT_info_sub = {j: CT_info_full[j] for j in CT_sub if j in CT_info_full}
+    L_i_sub = {i: L_i_full[i] for i in CB_sub if i in L_i_full}
+    Campus_like_ik_sub = {(i, k): v for (i, k), v in Campus_like_ik_full.items() if i in CB_set}
+
+    return {
+        'sets': {
+            'CB': CB_sub,
+            'CT': CT_sub,
+            'R': data_model['sets']['R'],
+            'K': data_model['sets']['K'],
+        },
+        'parameters': {
+            'Cap_jr': Cap_jr_sub,
+            'B_ij': B_ij_sub,
+            'CT_info': CT_info_sub,
+        },
+        'synthetic': {
+            'L_i': L_i_sub,
+            'Campus_like_ik': Campus_like_ik_sub,
+        }
+    }
