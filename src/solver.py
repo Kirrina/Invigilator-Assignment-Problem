@@ -56,19 +56,76 @@ def solve_model(prob, X, data_model, skip_export=False):
             metrics['high'] = w_high
             metrics['low'] = w_low
             
-        # 2. Thống kê Slack và Penalty (Violation counts)
+        # 2. Thống kê Slack và đếm vi phạm phụ
+        M4_fatigue = 0.0
         for var in prob.variables():
             val = pulp.value(var)
-            if val and val > 0.001:
-                if 'slack_cap' in var.name: metrics['slack_cap'] += val
-                elif 'slack_busy' in var.name: metrics['slack_busy'] += 1
-                elif 'slack_qual' in var.name: metrics['slack_qual'] += 1
-                elif 'yfatigue' in var.name: metrics['fatigue_count'] += 1
-                elif 'ypair' in var.name: metrics['travel_count'] += 1
-                
+            if val is None or val <= 0.001:
+                continue
+            name = var.name
+            if   'slack_cap'  in name: metrics['slack_cap']  += val
+            elif 'slack_busy' in name: metrics['slack_busy'] += 1
+            elif 'slack_qual' in name: metrics['slack_qual'] += 1
+            elif name.startswith('yfatigue'):
+                metrics['fatigue_count'] += 1
+                try:
+                    level = int(name.split('_')[-1])
+                    if level == 3:   M4_fatigue += 40
+                    elif level == 4: M4_fatigue += 80
+                    elif level == 5: M4_fatigue += 150
+                except (ValueError, IndexError):
+                    pass
+            elif name.startswith('ypair'):
+                metrics['travel_count'] += 1
+
+        # 3. Tính điểm phạt M3/M4/M5 từ coefficients của hàm mục tiêu
+        M3_static = 0.0
+        M5_travel = 0.0
+        try:
+            for var, coeff in prob.objective.items():
+                val = pulp.value(var)
+                if val is None or val <= 0.001:
+                    continue
+                vname = var.name
+                if vname.startswith('ypair'):
+                    M5_travel += coeff * val
+                elif vname.startswith('x_'):
+                    M3_static += coeff * val
+        except Exception:
+            pass
+
+        metrics['M3_static_penalty']  = round(M3_static,  2)
+        metrics['M4_fatigue_penalty'] = round(M4_fatigue, 2)
+        metrics['M5_travel_penalty']  = round(M5_travel,  2)
+        metrics['M1_total_quality']   = round(M3_static + M4_fatigue + M5_travel, 2)
+
+        # Tính workload distribution {staff_id: số ca} từ biến X
+        CB = data_model['sets']['CB']
+        CT = data_model['sets']['CT']
+        R  = data_model['sets']['R']
+        workload_dist = {}
+        for i in CB:
+            count = sum(
+                1 for j in CT for r in R
+                if pulp.value(X[i, j, r]) is not None and pulp.value(X[i, j, r]) > 0.5
+            )
+            if count > 0:
+                workload_dist[str(i)] = count
+        metrics['_workload_dist'] = workload_dist
+
+        # Luôn lưu metrics khi Optimal
+        try:
+            from analysis import save_solver_metrics
+            save_solver_metrics(metrics)
+        except ImportError:
+            pass
+
         if not skip_export:
             print(f"\n[+] ĐÃ TÌM THẤY LỜI GIẢI ({final_status})!")
             export_to_excel(prob, X, data_model)
+            
+    # Gán thời gian chạy trực tiếp thành một phần tử bên trong từ điển metrics
+    metrics['solve_time'] = prob.solutionTime if hasattr(prob, 'solutionTime') else 0.0
             
     return final_status, metrics
 
