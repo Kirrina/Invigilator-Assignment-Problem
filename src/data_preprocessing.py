@@ -64,7 +64,7 @@ def normalize_role(role):
 
     return mapping.get(role, role)
 
-def preprocess_data(file_path):
+def preprocess_data(file_path, busy_rate=0.05):
     """
     Preprocess Excel data and extract model parameters.
 
@@ -220,9 +220,16 @@ def preprocess_data(file_path):
 
     B_ij = {(i, j): 0 for i in CB for j in CT}
     num_busy_slots = int(0.05 * len(CB) * len(CT))
-    busy_pairs = random.sample(list(B_ij.keys()), num_busy_slots)
-    for pair in busy_pairs:
-        B_ij[pair] = 1
+    num_busy_slots = min(num_busy_slots, len(B_ij))  # Không vượt quá tổng số ô
+
+    if num_busy_slots > 0:
+        busy_pairs = random.sample(list(B_ij.keys()), num_busy_slots)
+        for pair in busy_pairs:
+            B_ij[pair] = 1
+
+    actual_rate = sum(B_ij.values()) / len(B_ij) if B_ij else 0
+    print(f"[B_ij] Số ô bận: {sum(B_ij.values())} / {len(B_ij)} ({actual_rate:.1%})")
+    # ────────────────────────────────────────────────────────────────
 
     
 
@@ -266,7 +273,22 @@ def preprocess_data(file_path):
         else:
             Campus_like_ik[(i, 'Cơ sở 1')] = 2
             Campus_like_ik[(i, 'Cơ sở 2')] = 2
-
+    # Cache logic
+    try:
+        from analysis import cache_exists, load_cache, save_cache
+        output_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output'))
+        os.makedirs(output_dir, exist_ok=True)
+        if cache_exists(output_dir):
+            B_ij_cached, Campus_like_cached = load_cache(output_dir)
+            if B_ij_cached is not None:
+                # Trong thí nghiệm busy_rate, KHÔNG dùng cache — cần B_ij mới mỗi lần
+                if busy_rate == 0.05:
+                    B_ij          = B_ij_cached
+                    Campus_like_ik = Campus_like_cached
+        elif busy_rate == 0.05:
+            save_cache(B_ij, Campus_like_ik, output_dir)
+    except ImportError:
+        pass
     print("--- Hoàn tất tiền xử lý dữ liệu ---")
 
     return {
@@ -450,3 +472,50 @@ def _update_busy_status(CB, CT, B_ij):
         except KeyboardInterrupt:
             print("\n❌ Đã hủy bỏ")
             break
+def slice_data_model(data_model, num_cb, num_ct):
+    import copy
+    sub_model = copy.deepcopy(data_model)
+    full_CB   = data_model['sets']['CB']
+    full_CT   = data_model['sets']['CT']
+    sub_CB    = full_CB[:num_cb]
+    sub_CT    = full_CT[:num_ct]
+    sub_model['sets']['CB'] = sub_CB
+    sub_model['sets']['CT'] = sub_CT
+
+    all_keys    = list(data_model['parameters'].keys())
+    ct_info_key = next((k for k in all_keys if 'CT_info' in k), 'CT_info')
+    cap_jr_key  = next((k for k in all_keys if 'Cap_jr'  in k), 'Cap_jr')
+    b_ij_key    = next((k for k in all_keys if 'B_ij'    in k), 'B_ij')
+
+    if ct_info_key in data_model['parameters']:
+        sub_model['parameters'][ct_info_key] = {
+            j: data_model['parameters'][ct_info_key][j] for j in sub_CT
+            if j in data_model['parameters'][ct_info_key]
+        }
+    if cap_jr_key in data_model['parameters']:
+        sub_model['parameters'][cap_jr_key] = {
+            (j, r): v for (j, r), v in data_model['parameters'][cap_jr_key].items()
+            if j in sub_CT
+        }
+    if b_ij_key in data_model['parameters']:
+        sub_model['parameters'][b_ij_key] = {
+            (i, j): v for (i, j), v in data_model['parameters'][b_ij_key].items()
+            if i in sub_CB and j in sub_CT
+        }
+
+    syn_keys = list(data_model['synthetic'].keys())
+    l_i_key  = next((k for k in syn_keys if 'L_i' in k), 'L_i')
+    cl_key   = next((k for k in syn_keys if 'Campus_like' in k), 'Campus_like_ik')
+
+    if l_i_key in data_model['synthetic']:
+        sub_model['synthetic'][l_i_key] = {
+            i: data_model['synthetic'][l_i_key][i]
+            for i in sub_CB if i in data_model['synthetic'][l_i_key]
+        }
+    if cl_key in data_model['synthetic']:
+        sub_model['synthetic'][cl_key] = {
+            (i, k): v for (i, k), v in data_model['synthetic'][cl_key].items()
+            if i in sub_CB
+        }
+
+    return sub_model
