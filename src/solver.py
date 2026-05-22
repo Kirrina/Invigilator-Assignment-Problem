@@ -105,22 +105,90 @@ def solve_model(prob, X, data_model, skip_export=False):
             metrics['high'] = w_high
             metrics['low'] = w_low
             
-        # 2. Thống kê Slack và Penalty (Violation counts)
-        # FIX: Đồng nhất logic - tất cả đều cộng giá trị (val), không cộng số lượng (1)
+        # 2. Thống kê Slack và cờ vi phạm
+        #
+        # ĐỒNG BỘ VỚI model_builder.py:
+        #   slack_busy, slack_qual là biến Binary → += val (không phải += 1)
+        #   yfatigue có 3 mức per (staff, day): level=3 (+40), level=4 (+80), level=5 (+150)
+        #     → penalty cộng dồn: 3 ca/ngày=40, 4 ca=120, 5 ca=270
+        #   ypair: += val (binary flag)
+        M4_fatigue = 0.0
         for var in prob.variables():
             val = pulp.value(var)
-            if val and val > 0.001:
-                if 'slack_cap' in var.name: 
-                    metrics['slack_cap'] += val
-                elif 'slack_busy' in var.name: 
-                    metrics['slack_busy'] += val  # FIX: += 1 → += val
-                elif 'slack_qual' in var.name: 
-                    metrics['slack_qual'] += val  # FIX: += 1 → += val
-                elif 'yfatigue' in var.name: 
-                    metrics['fatigue_count'] += val
-                elif 'ypair' in var.name: 
-                    metrics['travel_count'] += val
-                
+            if val is None or val <= 0.001:
+                continue
+            name = var.name
+            if 'slack_cap' in name:
+                metrics['slack_cap'] += val
+            elif 'slack_busy' in name:
+                metrics['slack_busy'] += val          # tổng giá trị, không phải count
+            elif 'slack_qual' in name:
+                metrics['slack_qual'] += val          # tổng giá trị, không phải count
+            elif name.startswith('yfatigue'):
+                metrics['fatigue_count'] += val       # số lần kích hoạt cờ
+                try:
+                    level = int(name.split('_')[-1])
+                    # Mỗi flag cộng thêm phần penalty của mức đó (cộng dồn)
+                    if level == 3:   M4_fatigue += 40  * val
+                    elif level == 4: M4_fatigue += 80  * val
+                    elif level == 5: M4_fatigue += 150 * val
+                except (ValueError, IndexError):
+                    pass
+            elif name.startswith('ypair'):
+                metrics['travel_count'] += val
+
+        # 3. Tính M3 / M5 từ coefficients hàm mục tiêu
+        #
+        # ĐỒNG BỘ VỚI model_builder.py — P_ijr bao gồm:
+        #   penalty_campus = 10.0 * (1 - like_score / 3.0)
+        #   penalty_qual   = 5.0  * max(0, staff_level - req_level)   [overqualification]
+        #                  + 50.0 * max(0, req_level  - staff_level)  [underqualification — MỚI]
+        # M5 = pair_penalties * ypair (travel + idle time)
+        # Các coefficient trong prob.objective đã nhân omega → giá trị lấy ra là omega * penalty
+        M3_static = 0.0
+        M5_travel = 0.0
+        try:
+            for var, coeff in prob.objective.items():
+                val = pulp.value(var)
+                if val is None or val <= 0.001:
+                    continue
+                vname = var.name
+                if vname.startswith('ypair'):
+                    M5_travel += coeff * val
+                elif vname.startswith('x_'):
+                    M3_static += coeff * val
+        except Exception:
+            pass
+
+        metrics['M3_static_penalty']  = round(M3_static,  2)
+        metrics['M4_fatigue_penalty'] = round(M4_fatigue, 2)
+        metrics['M5_travel_penalty']  = round(M5_travel,  2)
+        metrics['M1_total_quality']   = round(M3_static + M4_fatigue + M5_travel, 2)
+
+        # 4. Thêm objective vào metrics để analysis.py dùng trực tiếp
+        metrics['objective'] = obj_val
+
+        # 5. Workload distribution {staff_id: số ca}
+        CB = data_model['sets']['CB']
+        CT = data_model['sets']['CT']
+        R  = data_model['sets']['R']
+        workload_dist = {}
+        for i in CB:
+            count = sum(
+                1 for j in CT for r in R
+                if pulp.value(X[i, j, r]) is not None and pulp.value(X[i, j, r]) > 0.5
+            )
+            if count > 0:
+                workload_dist[str(i)] = count
+        metrics['_workload_dist'] = workload_dist
+
+        # 6. Lưu metrics cho mọi trạng thái khả thi (Optimal / Near-Optimal / Feasible)
+        try:
+            from analysis import save_solver_metrics
+            save_solver_metrics(metrics)
+        except ImportError:
+            pass
+
         if not skip_export:
             print(f"\n[+] ĐÃ TÌM THẤY LỜI GIẢI ({final_status})!")
             export_to_excel(prob, X, data_model)
