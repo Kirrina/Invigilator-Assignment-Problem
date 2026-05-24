@@ -15,6 +15,23 @@ Dự án này cung cấp bộ giải bài toán Phân công giám thị (Invigil
 *   **Python 3.8+**
 *   Các thư viện bổ trợ: `pandas`, `numpy`, `pulp`, `openpyxl`, `matplotlib`.
 
+# 🚀 Hướng dẫn cài đặt 
+
+Để đảm bảo hệ thống chạy mượt mà và không bị xung đột thư viện, vui lòng thực hiện theo các bước chuẩn sau đây.
+Mở Terminal / Command Prompt tại thư mục gốc của dự án (`IAP_PROJECT`) và chạy các lệnh:
+Khuyến khích : 
+```bash
+# Tạo môi trường ảo tên là clean_env
+    python -m venv clean_env
+
+# Kích hoạt môi trường ảo:
+# - Trên Windows (Command Prompt):
+    clean_env\Scripts\activate
+# - Trên Windows (PowerShell):
+    .\clean_env\Scripts\Activate.ps1
+# - Trên Mac/Linux:
+    source clean_env/bin/activate
+```
 Cài đặt nhanh bằng lệnh:
 ```bash
 pip install -r requirements.txt
@@ -29,6 +46,7 @@ pip install -r requirements.txt
 ```bash
 python src/main.py
 ```
+
 
 ### 3. Điều chỉnh dữ liệu (Data Adjustment)
 Trước khi giải, hệ thống cung cấp Menu tương tác để bạn hiệu chỉnh dữ liệu đầu vào:
