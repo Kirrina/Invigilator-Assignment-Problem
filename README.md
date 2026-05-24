@@ -6,15 +6,32 @@ Dự án này cung cấp bộ giải bài toán Phân công giám thị (Invigil
 
 *   **Tối ưu hóa đa mục tiêu:** Cân bằng giữa độ lệch khối lượng công việc (Fairness) và các điểm phạt (Penalty) về di chuyển, mệt mỏi.
 *   **Cơ chế Nới lỏng Ràng buộc (Slack Variables):** Đảm bảo hệ thống luôn tìm ra nghiệm ngay cả khi dữ liệu đầu vào có mâu thuẫn (Infeasible) thông qua chiến lược phạt Big-M.
-*   **Tinh chỉnh trọng số tương tác (Interactive Tuning):** Cho phép người dùng đánh giá các chỉ số sức khỏe của lịch (Gap công bằng, số lần mệt mỏi, di chuyển...) và điều chỉnh trọng số ngay trong lúc chạy.
-*   **Tối ưu hiệu năng vượt trội:** Sử dụng kỹ thuật tính toán trước (`X_sum`) giúp giảm thời gian xây dựng mô hình từ vài phút xuống còn vài giây, xử lý mượt mà hàng chục nghìn biến số.
-*   **Xử lý thời gian thực:** Chống trùng lịch và kiểm tra di chuyển bất khả thi dựa trên giờ bắt đầu/kết thúc thực tế.
+*   **Hệ thống Cache thông minh:** Tự động lưu trữ và tái sử dụng trạng thái bận ($B_{ij}$) và sở thích cơ sở ($Campus\_like$) giúp kết quả thực nghiệm ổn định và so sánh baseline chính xác.
+*   **Tinh chỉnh trọng số tương tác (Interactive Tuning):** Cho phép người dùng đánh giá các chỉ số sức khỏe của lịch và điều chỉnh trọng số ngay trong lúc chạy.
+*   **Phân tích hiệu năng chuyên sâu:** Bộ công cụ so sánh lịch Solver với lịch Baseline thực tế, đo lường mức độ cải thiện tính công bằng và chất lượng phân công.
 
 ## 🛠️ Yêu cầu hệ thống
 
 *   **Python 3.8+**
-*   Các thư viện bổ trợ: `pandas`, `numpy`, `pulp`, `openpyxl`.
+*   Các thư viện bổ trợ: `pandas`, `numpy`, `pulp`, `openpyxl`, `matplotlib`.
 
+# 🚀 Hướng dẫn cài đặt 
+
+Để đảm bảo hệ thống chạy mượt mà và không bị xung đột thư viện, vui lòng thực hiện theo các bước chuẩn sau đây.
+Mở Terminal / Command Prompt tại thư mục gốc của dự án (`IAP_PROJECT`) và chạy các lệnh:
+Khuyến khích : 
+```bash
+# Tạo môi trường ảo tên là clean_env
+    python -m venv clean_env
+
+# Kích hoạt môi trường ảo:
+# - Trên Windows (Command Prompt):
+    clean_env\Scripts\activate
+# - Trên Windows (PowerShell):
+    .\clean_env\Scripts\Activate.ps1
+# - Trên Mac/Linux:
+    source clean_env/bin/activate
+```
 Cài đặt nhanh bằng lệnh:
 ```bash
 pip install -r requirements.txt
@@ -30,6 +47,7 @@ pip install -r requirements.txt
 python src/main.py
 ```
 
+
 ### 3. Điều chỉnh dữ liệu (Data Adjustment)
 Trước khi giải, hệ thống cung cấp Menu tương tác để bạn hiệu chỉnh dữ liệu đầu vào:
 *   **Lựa chọn 1 (Xem thông tin):** Kiểm tra năng lực hiện tại, sở thích cơ sở và số lượng ca bận của một cán bộ cụ thể.
@@ -41,7 +59,7 @@ Trước khi giải, hệ thống cung cấp Menu tương tác để bạn hiệ
     *   `2`: Bận tuyệt đối (Hệ thống tuyệt đối không phân công).
 
 ### 4. Kiểm tra tiền khả thi (Static Audit)
-Sau khi nhấn `0` để thoát Menu Adjustment, hệ thống sẽ tự động thực hiện **Audit**. Nếu phát hiện thiếu người trầm trọng hoặc không đủ cán bộ đạt trình độ cho một ca thi, chương trình sẽ cảnh báo và yêu cầu bạn điều chỉnh lại dữ liệu trước khi giải.
+Sau khi nhấn `0` để thoát Menu Adjustment, hệ thống sẽ tự động thực hiện **Audit**. Nếu phát hiện thiếu người trầm trọng hoặc không đủ cán bộ đạt trình độ cho một ca thi, chương trình sẽ cảnh báo và yêu cầu bạn điều chỉnh lại dữ liệu trước khi giải để tránh lãng phí thời gian tính toán.
 
 ### 5. Tinh chỉnh tham số (Weight Tuning)
 Sau khi Solver tìm ra lời giải, bạn sẽ nhận được **Chỉ số sức khỏe của lịch**. Nếu chưa ưng ý, hãy chọn `2` để tinh chỉnh tham số:
@@ -58,15 +76,28 @@ Khi các chỉ số đã đạt yêu cầu, chọn `1` để xuất kết quả 
 ```text
 IAP_PROJECT/
 ├── input/               # Chứa file Excel đầu vào
-├── output/              # Kết quả lịch tối ưu
+├── output/              # Kết quả lịch tối ưu và các file Cache
+│   ├── B_ij_cache.json        # Lưu trữ trạng thái bận
+│   ├── Campus_like_cache.json # Lưu trữ sở thích cơ sở
+│   └── solver_metrics.json    # Chỉ số đánh giá sau khi giải
 ├── src/                 # Mã nguồn chính
 │   ├── main.py                # Bộ điều phối trung tâm & Tuning Loop
-│   ├── data_preprocessing.py   # Làm sạch & Tiền xử lý dữ liệu
+│   ├── data_preprocessing.py   # Làm sạch, Cache & Cắt dữ liệu
 │   ├── model_builder.py        # Xây dựng mô hình ILP & Biến Slack
-│   └── solver.py               # Thực thi bộ giải CBC & Trích xuất metrics
+│   ├── solver.py               # Thực thi bộ giải & Trích xuất metrics
+│   ├── analysis.py             # Phân tích đối sánh Baseline vs Solver
+│   ├── busy_rate_experiment.py # Thực nghiệm ngưỡng chịu tải
+│   └── evaluate_time.py        # Đo lường hiệu năng theo quy mô
 ├── requirements.txt     # Danh sách thư viện cần thiết
 └── README.md            # Hướng dẫn sử dụng
 ```
+
+## 📊 Công cụ Phân tích & Thực nghiệm
+
+Dự án tích hợp các công cụ chuyên sâu dành cho nghiên cứu:
+*   **`src/analysis.py`**: Chạy sau khi có kết quả Solver để so sánh chi tiết với lịch phân công gốc trong file Excel.
+*   **`src/busy_rate_experiment.py`**: Tự động chạy nhiều kịch bản với tỉ lệ bận khác nhau để tìm ngưỡng "tới hạn" của hệ thống.
+*   **`src/evaluate_time.py`**: Đo lường tốc độ xử lý của mô hình theo quy mô dữ liệu (Subset).
 
 ---
 **Nhóm phát triển - Mô hình hóa toán học (Nhóm 9 - L01)**
